@@ -1,0 +1,3 @@
+[console_scripts]
+motion_model_node = succulence_rover_ros.motion_model:main
+occupancy_grid_mapper_node = succulence_rover_ros.occupancy_grid_mapper:main

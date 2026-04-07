@@ -1,0 +1,175 @@
+# ====================================================================
+# Succulence Rover — Algorithmic Robotics Lab Parameters
+# ====================================================================
+#
+# To switch between virtual and physical robots, change the topic names
+# and frame names below. Both configurations are provided — uncomment
+# the one you need.
+#
+# ====================================================================
+
+
+# ====================================================================
+# Week 5: Motion Model Node (Dead Reckoning)
+# ====================================================================
+motion_model:
+  ros__parameters:
+    # --- Input topic ---
+    # === Virtual robot (Gazebo / simulation) ===
+    odom_topic: "/succulence/odom"
+    # === Physical robot (TurtleBot) ===
+    # odom_topic: "/odom"
+
+    # --- Output topics ---
+    dead_reckoning:
+      odometry_topic: "/succulence/dead_reckoning/odometry"
+      path_topic: "/succulence/dead_reckoning/path"
+
+    # --- Frame names ---
+    frames:
+      # === Virtual robot ===
+      odom_frame: "succulence/odom"
+      base_link_frame: "succulence/base_link"
+      # === Physical robot ===
+      # odom_frame: "odom"
+      # base_link_frame: "base_link"
+      map_frame: "map"
+
+    # --- Lidar mounting offset (base_link → lidar) ---
+    # Set these to match your robot's TF. Default (0, 0, 0) works for
+    # both the Unity sim and TurtleBot (lidar aligned with base_link).
+    # If your lidar is mounted offset or rotated, set these accordingly.
+    lidar:
+      x_offset: 0.0        # metres forward from base_link
+      y_offset: 0.0        # metres left from base_link
+      yaw_offset: 0.0      # radians CCW from base_link forward
+
+    # --- Alpha noise parameters ---
+    # These model how odometry uncertainty grows with robot motion.
+    # Larger values = faster uncertainty growth = more ghost walls.
+    # See Probabilistic Robotics (Thrun et al., 2005), Table 5.3.
+    motion_model:
+      alpha1: 0.01    # translation variance from translation (wheel slip)
+      alpha2: 0.005   # translation variance from rotation
+      alpha3: 0.005   # rotation variance from translation
+      alpha4: 0.02    # rotation variance from rotation
+      max_trajectory_length: 1000
+
+
+# ====================================================================
+# Week 5: Occupancy Grid Mapper Node
+# ====================================================================
+occupancy_grid_mapper:
+  ros__parameters:
+    # --- Topics ---
+    # === Virtual robot ===
+    scan_topic: "/succulence/scan"
+    # === Physical robot ===
+    # scan_topic: "/scan"
+
+    odom_topic: "/succulence/dead_reckoning/odometry"
+    map_topic: "/succulence/map/odom_only"
+
+    # --- Map publishing rate ---
+    map_publish_rate: 1.0   # Hz
+
+    # --- Grid parameters ---
+    occupancy_grid:
+      resolution: 0.05       # metres per cell
+      width: 1000            # cells (50m total width)
+      height: 700            # cells (35m total height)
+      origin_x: -25.0        # metres (grid covers -25 to +25 in x)
+      origin_y: -17.5        # metres (grid covers -17.5 to +17.5 in y)
+      log_odds_occupied: 0.85
+      log_odds_free: 0.4
+      log_odds_max: 5.0
+      log_odds_min: -5.0
+      max_range: 12.0        # metres (ignore readings beyond this)
+      min_range: 0.1         # metres (ignore readings closer than this)
+
+
+# ====================================================================
+# Week 6: Scan Matcher Parameters
+# ====================================================================
+# (The scan matcher is a library, not a standalone node. These params
+# are used by the SLAM node in Week 7 — listed here for reference.)
+# scan_matcher:
+#   search_x: 0.5           # metres (wide search for standalone testing)
+#   search_y: 0.5
+#   search_theta: 0.2       # radians
+#   resolution_x: 0.02
+#   resolution_y: 0.02
+#   resolution_theta: 0.01
+#   local_grid_size: 100
+#   local_grid_resolution: 0.05
+#   min_score: 0.3
+
+
+# ====================================================================
+# Week 7: SLAM Node
+# ====================================================================
+slam_node:
+  ros__parameters:
+    # --- Input topics ---
+    # === Virtual robot ===
+    scan_topic: "/succulence/scan"
+    odom_topic: "/succulence/odom"
+    # === Physical robot ===
+    # scan_topic: "/scan"
+    # odom_topic: "/odom"
+
+    # --- Output topics ---
+    map_topic: "/succulence/map"
+    slam_odometry_topic: "/succulence/slam/odometry"
+    slam_path_topic: "/succulence/slam/path"
+
+    # --- Keyframe selection ---
+    slam:
+      keyframe_distance: 0.5   # metres (add keyframe after moving this far)
+      keyframe_angle: 0.3      # radians (or after rotating this much)
+      optimization_interval: 5 # optimise every N keyframes
+      num_iterations: 10       # Gauss-Newton iterations per optimisation
+      map_publish_interval: 2.0  # seconds
+      scan_match_cov_xy: 0.005
+      scan_match_cov_theta: 0.003
+
+    # --- Lidar mounting offset (same as occupancy_grid_mapper) ---
+    lidar:
+      x_offset: 0.0
+      y_offset: 0.0
+      yaw_offset: 0.0
+
+    # --- Motion model (internal to SLAM node) ---
+    # Lower values than Week 5 because the simulator has near-perfect odometry.
+    # For physical robot, increase to match real drift.
+    motion_model:
+      alpha1: 0.001
+      alpha2: 0.0005
+      alpha3: 0.0005
+      alpha4: 0.002
+
+    # --- Scan matcher (tighter window — odometry gives good initial guess) ---
+    scan_matcher:
+      search_x: 0.15
+      search_y: 0.15
+      search_theta: 0.1
+      resolution_x: 0.03
+      resolution_y: 0.03
+      resolution_theta: 0.02
+      min_score: 0.3
+      local_grid_size: 500
+      local_grid_resolution: 0.05
+
+    # --- Occupancy grid (same as Week 5) ---
+    occupancy_grid:
+      resolution: 0.05
+      width: 1000
+      height: 700
+      origin_x: -25.0
+      origin_y: -17.5
+      log_odds_occupied: 0.85
+      log_odds_free: 0.4
+      log_odds_max: 5.0
+      log_odds_min: -5.0
+      max_range: 12.0
+      min_range: 0.1
