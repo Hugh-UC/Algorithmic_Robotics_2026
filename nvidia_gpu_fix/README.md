@@ -18,7 +18,7 @@ By default, the standard Docker containers may rely on CPU rendering or integrat
 - [GPU Monitoring](#gpu-monitoring)
     - [1. Find your Container Name](#1-find-your-container-name)
     - [2. Execute GPU Monitoring](#2-execute-gpu-monitoring)
-        - [Expected Output](#expected-output)
+    - [3. Expected Output](#3-expected-output)
 - [Code Breakdown: What Was Added?](#code-breakdown-what-was-added)
     - [1. GPU Device Reservation](#1-gpu-device-reservation)
     - [2. Optimus / Prime Environment Variables](#2-optimus--prime-environment-variables)
@@ -50,8 +50,14 @@ OR
 cd ~/<YOUR_REPO_NAME>/workspace/succulence_ws/nvidia_gpu_fix
 ```
 
+Copy the compose file (`compose-simulation-nvidia.yaml`) into the root directory of your Collaborative Robotics Lab:
+```sh
+cp compose-simulation-nvidia.yaml ~/algorithmic-robots-world
+```
+
 Start the Simulation (containers):
 ```sh
+cd ~/algorithmic-robots-world
 docker compose -f compose-simulation-nvidia.yaml pull
 xhost +local:root
 docker compose -f compose-simulation-nvidia.yaml up -d
@@ -99,7 +105,7 @@ docker exec -it algorithmic-robots-world-ar-simulation-1 watch -n 1 nvidia-smi
 ```
 
 
-#### Expected Output:
+### 3. Expected Output:
 
 You should see a table similar to the one below:
 ```sh
@@ -126,6 +132,8 @@ Mon Apr 00 18:00:00 2026
 +-----------------------------------------------------------------------------------------+
 ```
 To confirm the hardware acceleration is working, check the Processes section at the bottom. You should see active processes (like `/entry` or your GUI elements) consuming GPU Memory.
+
+**Note:** If monitoring from within the container (`docker exec -it...`) the processes tab MAY be empty, however, all other information should be correct (memory usage, gpu utilisation, temp, etc).
 
 <br>
 
