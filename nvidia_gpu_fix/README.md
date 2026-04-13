@@ -40,15 +40,21 @@ Because this file is named differently than the default `compose-simulation.yaml
 
 Navigate to the directory containing this file:
 ```sh
+cd ~/algorithmic-robots-world/workspace/succulence_ws/nvidia_gpu_fix/
+```
+OR
+```sh
 cd ~/<YOUR_REPO_NAME>/workspace/succulence_ws/nvidia_gpu_fix
 ```
 
-Start the containers using the -f (file) flag:
+Start the Simulation (containers):
 ```sh
+docker compose -f compose-simulation-nvidia.yaml pull
+xhost +local:root
 docker compose -f compose-simulation-nvidia.yaml up -d
 ```
 
-To stop the containers:
+Stop the Simulation (containers):
 ```sh
 docker compose -f compose-simulation-nvidia.yaml down
 ```
