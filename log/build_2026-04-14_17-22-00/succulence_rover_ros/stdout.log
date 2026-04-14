@@ -1,0 +1,20 @@
+running egg_info
+writing ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/PKG-INFO
+writing dependency_links to ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/dependency_links.txt
+writing entry points to ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/entry_points.txt
+writing requirements to ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/requires.txt
+writing top-level names to ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/top_level.txt
+reading manifest file '../../build/succulence_rover_ros/succulence_rover_ros.egg-info/SOURCES.txt'
+writing manifest file '../../build/succulence_rover_ros/succulence_rover_ros.egg-info/SOURCES.txt'
+running build
+running build_py
+copying succulence_rover_ros/motion_model.py -> /home/hugh/algorithmic-robots-world/workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros
+running install
+running install_lib
+copying /home/hugh/algorithmic-robots-world/workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/motion_model.py -> /home/hugh/algorithmic-robots-world/workspace/succulence_ws/install/lib/python3.12/site-packages/succulence_rover_ros
+byte-compiling /home/hugh/algorithmic-robots-world/workspace/succulence_ws/install/lib/python3.12/site-packages/succulence_rover_ros/motion_model.py to motion_model.cpython-312.pyc
+running install_data
+copying config/params.yaml -> /home/hugh/algorithmic-robots-world/workspace/succulence_ws/install/share/succulence_rover_ros/config
+running install_egg_info
+removing '/home/hugh/algorithmic-robots-world/workspace/succulence_ws/install/lib/python3.12/site-packages/succulence_rover_ros-0.1.0-py3.12.egg-info' (and everything under it)
+Copying ../../build/succulence_rover_ros/succulence_rover_ros.egg-info to /home/hugh/algorithmic-robots-world/workspace/succulence_ws/install/lib/python3.12/site-packages/succulence_rover_ros-0.1.0-py3.12.egg-info

@@ -1,0 +1,7 @@
+Metadata-Version: 2.1
+Name: succulence-rover-ros
+Version: 0.1.0
+Summary: SLAM and navigation package for the Succulence Rover
+Maintainer: Maleen Jayasuriya
+Maintainer-email: maleen.jayasuriya@canberra.edu.au
+License: MIT
