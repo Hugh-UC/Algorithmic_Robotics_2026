@@ -88,17 +88,33 @@ class ScanMatcher:
             - from scipy.ndimage import maximum_filter is already imported
             - ~10-15 lines of code
         """
-        # TODO: YOUR CODE HERE
         grid = np.zeros((self.local_grid_size, self.local_grid_size), dtype=np.float32)
         offset = self.local_grid_size // 2
 
+        # Vetorised version:
+        if len(scan_points) > 0:
+            # Vectorised conversion to grid coordinates
+            cols = (scan_points[:, 0] / self.local_grid_resolution).astype(int) + offset
+            rows = (scan_points[:, 1] / self.local_grid_resolution).astype(int) + offset
+
+            # Create a mask for points that fall within the grid bounds
+            valid_mask = (rows >= 0) & (rows < self.local_grid_size) & \
+                         (cols >= 0) & (cols < self.local_grid_size)
+            
+            # Assign 1.0 only to valid coordinates
+            grid[rows[valid_mask], cols[valid_mask]] = 1.0
+
+        # Non-vectorised version:
+        '''
         for x, y in scan_points:
             col = int(x / self.local_grid_resolution) + offset
             row = int(y / self.local_grid_resolution) + offset
 
             if 0 <= row < self.local_grid_size and 0 <= col < self.local_grid_size:
                 grid[row, col] = 1.0
+        '''
 
+        # Dilate for tolerance (1 cell radius → 3x3 maximum filter)
         grid = maximum_filter(grid, size=3)
 
         return grid
@@ -137,8 +153,33 @@ class ScanMatcher:
             - You can vectorise with NumPy or use a loop
             - ~10-15 lines of code
         """
-        # TODO: YOUR CODE HERE
-        pass
+        # Extract pose components
+        dx, dy, dtheta = pose
+        
+        # Compute cos/sin once
+        c, s = np.cos(dtheta), np.sin(dtheta)
+
+        # Vectorise the transformation of scan points
+        px = scan_points[:, 0]
+        py = scan_points[:, 1]
+        
+        px_prime = c * px - s * py + dx
+        py_prime = s * px + c * py + dy
+        
+        # Convert to grid coordinates
+        offset = self.local_grid_size // 2
+        cols = (px_prime / self.local_grid_resolution).astype(int) + offset
+        rows = (py_prime / self.local_grid_resolution).astype(int) + offset
+        
+        # Find points within the grid bounds
+        valid_mask = (rows >= 0) & (rows < self.local_grid_size) & \
+                     (cols >= 0) & (cols < self.local_grid_size)
+        
+        # Count valid points in occupied cell (> 0)
+        hits = grid[rows[valid_mask], cols[valid_mask]] > 0
+        
+        # Return total score
+        return float(np.sum(hits))
 
     # ========================================================================
     # STUDENT TODO #3: Main Scan Matching Function
@@ -229,7 +270,6 @@ class ScanMatcher:
         # After the loop:
         #   - Compute normalised_score = best_score / len(scan_new)
         #   - If normalised_score < self.min_score: return (initial_guess, default_cov, 0.0)
-        """
         for ix, x in enumerate(x_values):
 
             for iy, y in enumerate(y_values):
@@ -244,8 +284,9 @@ class ScanMatcher:
                         best_score = score
                         best_pose = candidate
                         best_idx = (ix, iy, it)
+        
+        # Vectorised version (optional, not required):
         """
-
         gx, gy, gt =    np.meshgrid(x_values, y_values, theta_values, indexing='ij')
         candidates =    np.stack([gx, gy, gt], axis=-1).reshape(-1, 3)
         indices =       np.indices(gx.shape).reshape(3, -1).T
@@ -259,22 +300,21 @@ class ScanMatcher:
 
             if score > best_score:
                 best_score, best_pose, best_idx = score, candidate, (ix, iy, it)
-
+        """
+        
         normalised_score = best_score / len(scan_new)
 
         if normalised_score < self.min_score:
             return initial_guess.copy(), default_cov, 0.0 
         
-
         
-
         # Step 4: Estimate covariance from the Hessian of the score surface
         covariance = self._estimate_covariance_from_hessian(
             scores, best_idx,
             self.resolution_x, self.resolution_y, self.resolution_theta
         )
 
-        return best_pose, covariance, normalized_score
+        return best_pose, covariance, normalised_score
 
     # ========================================================================
     # PROVIDED: Estimate Covariance from Hessian (do not modify)
