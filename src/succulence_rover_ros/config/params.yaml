@@ -16,9 +16,9 @@ motion_model:
   ros__parameters:
     # --- Input topic ---
     # === Virtual robot (Gazebo / simulation) ===
-    odom_topic: "/succulence/odom"
+    # odom_topic: "/succulence/odom"
     # === Physical robot (TurtleBot) ===
-    # odom_topic: "/odom"
+    odom_topic: "/odom"
 
     # --- Output topics ---
     dead_reckoning:
@@ -28,11 +28,11 @@ motion_model:
     # --- Frame names ---
     frames:
       # === Virtual robot ===
-      odom_frame: "succulence/odom"
-      base_link_frame: "succulence/base_link"
+      # odom_frame: "succulence/odom"
+      # base_link_frame: "succulence/base_link"
       # === Physical robot ===
-      # odom_frame: "odom"
-      # base_link_frame: "base_link"
+      odom_frame: "odom"
+      base_link_frame: "base_link"
       map_frame: "map"
 
     # --- Lidar mounting offset (base_link → lidar) ---
@@ -63,9 +63,9 @@ occupancy_grid_mapper:
   ros__parameters:
     # --- Topics ---
     # === Virtual robot ===
-    scan_topic: "/succulence/scan"
+    # scan_topic: "/succulence/scan"
     # === Physical robot ===
-    # scan_topic: "/scan"
+    scan_topic: "/scan"
 
     odom_topic: "/succulence/dead_reckoning/odometry"
     map_topic: "/succulence/map/odom_only"
@@ -101,11 +101,11 @@ slam_node:
   ros__parameters:
     # --- Input topics ---
     # === Virtual robot ===
-    scan_topic: "/succulence/scan"
-    odom_topic: "/succulence/odom"
+    # scan_topic: "/succulence/scan"
+    # odom_topic: "/succulence/odom"
     # === Physical robot ===
-    # scan_topic: "/scan"
-    # odom_topic: "/odom"
+    scan_topic: "/scan"
+    odom_topic: "/odom"
 
     # --- Output topics ---
     map_topic: "/succulence/map"
