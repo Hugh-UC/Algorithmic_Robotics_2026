@@ -1,0 +1,19 @@
+running develop
+running egg_info
+writing succulence_rover_ros.egg-info/PKG-INFO
+writing dependency_links to succulence_rover_ros.egg-info/dependency_links.txt
+writing entry points to succulence_rover_ros.egg-info/entry_points.txt
+writing requirements to succulence_rover_ros.egg-info/requires.txt
+writing top-level names to succulence_rover_ros.egg-info/top_level.txt
+reading manifest file 'succulence_rover_ros.egg-info/SOURCES.txt'
+writing manifest file 'succulence_rover_ros.egg-info/SOURCES.txt'
+running build_ext
+Creating /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence-rover-ros.egg-link (link to .)
+Installing motion_model_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+Installing navigator_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+Installing occupancy_grid_mapper_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+Installing planner_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+Installing slam_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+
+Installed /workspace/succulence_ws/build/succulence_rover_ros
+running symlink_data

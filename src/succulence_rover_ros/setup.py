@@ -15,9 +15,10 @@ setup(
         # Install launch files
         ('share/' + package_name + '/launch',
             glob(os.path.join('launch', '*.launch.py'))),
-        # Install config files
+        # Install config files (YAML params + RViz layouts)
         ('share/' + package_name + '/config',
-            glob(os.path.join('config', '*.yaml'))),
+            glob(os.path.join('config', '*.yaml')) +
+            glob(os.path.join('config', '*.rviz'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -31,6 +32,11 @@ setup(
             # Week 5: Dead reckoning + occupancy grid mapping
             'motion_model_node = succulence_rover_ros.motion_model:main',
             'occupancy_grid_mapper_node = succulence_rover_ros.occupancy_grid_mapper:main',
+            # Week 11: Pose graph SLAM
+            'slam_node = succulence_rover_ros.slam_node:main',
+            # Week 12: A* planner + pure-pursuit navigator
+            'planner_node = succulence_rover_ros.planner_node:main',
+            'navigator_node = succulence_rover_ros.navigator_node:main',
         ],
     },
 )

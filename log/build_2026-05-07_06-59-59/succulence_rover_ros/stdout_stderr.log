@@ -1,0 +1,70 @@
+running develop
+Removing /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence-rover-ros.egg-link (link to .)
+running egg_info
+writing ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/PKG-INFO
+writing dependency_links to ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/dependency_links.txt
+writing entry points to ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/entry_points.txt
+writing requirements to ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/requires.txt
+writing top-level names to ../../build/succulence_rover_ros/succulence_rover_ros.egg-info/top_level.txt
+reading manifest file '../../build/succulence_rover_ros/succulence_rover_ros.egg-info/SOURCES.txt'
+writing manifest file '../../build/succulence_rover_ros/succulence_rover_ros.egg-info/SOURCES.txt'
+running build
+running build_py
+copying succulence_rover_ros/astar.py -> /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros
+running install
+running install_lib
+creating /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/slam_node_lab08.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/__init__.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/slam_node.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/planner_node.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/graph_optimizer.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/scan_matcher.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/occupancy_grid_mapper.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/path_follower.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/navigator_node.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/pose_graph.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/astar.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/slam_node_lab09.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/utils.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+copying /workspace/succulence_ws/build/succulence_rover_ros/build/lib/succulence_rover_ros/motion_model.py -> /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/slam_node_lab08.py to slam_node_lab08.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/__init__.py to __init__.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/slam_node.py to slam_node.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/planner_node.py to planner_node.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/graph_optimizer.py to graph_optimizer.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/scan_matcher.py to scan_matcher.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/occupancy_grid_mapper.py to occupancy_grid_mapper.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/path_follower.py to path_follower.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/navigator_node.py to navigator_node.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/pose_graph.py to pose_graph.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/astar.py to astar.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/slam_node_lab09.py to slam_node_lab09.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/utils.py to utils.cpython-312.pyc
+byte-compiling /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros/motion_model.py to motion_model.cpython-312.pyc
+running install_data
+copying resource/succulence_rover_ros -> /workspace/succulence_ws/install/succulence_rover_ros/share/ament_index/resource_index/packages
+copying package.xml -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros
+copying launch/dead_reckoning_physical.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying launch/dead_reckoning_sim.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying launch/mission_physical.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying launch/slam_sim.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying launch/mission_sim.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying launch/mission.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying launch/dead_reckoning.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying launch/slam_physical.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying launch/slam.launch.py -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/launch
+copying config/params_physical.yaml -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/config
+copying config/params.yaml -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/config
+copying config/params_sim.yaml -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/config
+copying config/succulance.rviz -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/config
+copying config/succulance_slam.rviz -> /workspace/succulence_ws/install/succulence_rover_ros/share/succulence_rover_ros/config
+running install_egg_info
+Copying ../../build/succulence_rover_ros/succulence_rover_ros.egg-info to /workspace/succulence_ws/install/succulence_rover_ros/lib/python3.12/site-packages/succulence_rover_ros-0.1.0-py3.12.egg-info
+running install_scripts
+Installing motion_model_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+Installing navigator_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+Installing occupancy_grid_mapper_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+Installing planner_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+Installing slam_node script to /workspace/succulence_ws/install/succulence_rover_ros/lib/succulence_rover_ros
+writing list of installed files to '/workspace/succulence_ws/build/succulence_rover_ros/install.log'
