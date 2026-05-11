@@ -6,7 +6,7 @@
 
 
 # ====================================================================
-# Week 5: Motion Model Node (Dead Reckoning)
+# Motion Model Node (Dead Reckoning)
 # ====================================================================
 motion_model:
   ros__parameters:
@@ -67,7 +67,7 @@ motion_model:
 
 
 # ====================================================================
-# Week 5: Occupancy Grid Mapper Node
+# Occupancy Grid Mapper Node
 # ====================================================================
 occupancy_grid_mapper:
   ros__parameters:
@@ -146,7 +146,7 @@ occupancy_grid_mapper:
 
 
 # ====================================================================
-# Week 11: SLAM Node (Pose Graph SLAM)
+# SLAM Node (Pose Graph SLAM)
 # ====================================================================
 slam_node:
   ros__parameters:
@@ -190,7 +190,7 @@ slam_node:
       # Seconds between OccupancyGrid publishes from SLAM.
       # Larger: less RViz/CPU load, laggier map.
       # Smaller: snappier map, more bandwidth and rendering cost.
-      map_publish_interval: 2.0
+      map_publish_interval: 0.75
 
       # Floor on the diagonal of scan-match edge covariances. Prevents one
       # over-confident match from dominating the optimiser.
@@ -200,6 +200,17 @@ slam_node:
       #   more sensitive to bad matches.
       scan_match_cov_xy: 0.003
       scan_match_cov_theta: 0.0015
+
+      # --- Group 001: Map-Scan Weighting ---
+      # Relative weighting of scan-to-scan edges vs scan-to-map edges in the
+      # graph optimiser's cost function. This parameter tunes how much it
+      # prioritises scan matches vs map consistency.
+      # Larger: scan-to-map matches have more influence on corrected pose.
+      # Smaller: scan-to-scan matches have more influence on corrected pose.
+      map_match_weight: 0.3
+
+      scan_rate_limit: 10.0     # Maximum rate at which incoming scans are processed
+      # -------------------------------------
 
     # See motion_model.lidar above for offsets.
     lidar:
@@ -272,13 +283,15 @@ slam_node:
 
 
 # ====================================================================
-# Week 12: A* Path Planner
+# A* Path Planner
 # ====================================================================
 planner_node:
   ros__parameters:
     map_topic: "/succulence/map"
+    scan_topic: "/succulence/scan"          # physical: "/scan"
     odom_topic: "/succulence/slam/odometry"
     plan_topic: "/succulence/plan"
+    costmap_topic: "/succulence/costmap"
 
     frames:
       map_frame: "map"
@@ -290,8 +303,14 @@ planner_node:
       # Larger: stable plans, slower reaction to newly mapped obstacles.
       # Smaller: reacts faster but the path can visibly jitter as the
       #   map fills in.
-      replan_period: 1.0
+      # Can be made smaller if heuristic weight (epsilon) is increased!
+      replan_period: 0.5
 
+      heuristic_weight: 1.2       # 1.0 = Optimal (no change), >1.0 = Greedy/Fast
+      data_weight: 0.3            # "Path Fidelity" (High = sticks to A* grid, Low = smooths out)
+      smooth_weight: 0.25         # "Rubber Band" (High = cuts corners tightly)
+
+    costmaps:
       # Cell value (0..100) at or above which a cell is treated as an
       # obstacle by A*.
       # Larger: only highly-confident occupied cells block the planner;
@@ -309,13 +328,26 @@ planner_node:
       #   hit something the map hasn't yet revealed.
       treat_unknown_as_obstacle: false
 
-      # Number of grid cells to inflate every obstacle by. Acts as the
-      # safety margin between the planner's idea of "free" and the rover's
-      # actual footprint.
-      # Larger: paths stay further from obstacles; narrow gaps may
-      #   inflate shut and become "no path".
-      # Smaller: paths hug walls; rover may scrape corners.
-      inflation_radius_cells: 10
+      global:
+        # Number of grid cells to inflate every obstacle by. Acts as the
+        # safety margin between the planner's idea of "free" and the rover's
+        # actual footprint.
+        # Larger: paths stay further from obstacles; narrow gaps may
+        #   inflate shut and become "no path".
+        # Smaller: paths hug walls; rover may scrape corners.
+        inflation_radius_cells: 14.0      # **OLD** : 10
+
+        # Absolute maximum mathematical "fear" the robot has of touching a wall.
+        # In the heuristic function, this caps the cost of cells near obstacles
+        # Larger = Scared of walls, hugs the centre line.
+        # Smaller = Less scared, cuts corners more aggressively.
+        inflation_weight: 50.0
+
+      local:
+        inflation_radius_cells: 10.0    # tighter radius favours getting closer to obstacles for local planning
+        inflation_weight: 5.0           # lower weight for local costmap to allow squeezing through tighter spaces
+        max_obstacle_range: 3.0         # ignore obstacles beyond range in local costmap (meters)
+        min_obstacle_range: 0.1         # ignore obstacles within range to avoid self-hits in local costmap (meters)
 
     # Hardcoded mission goal (Kevin's location), in the map frame.
     # Increase x: goal moves east. Decrease x: goal moves west.
@@ -323,10 +355,11 @@ planner_node:
     goal:
       x: 50.0
       y: 3.0
+      tolerance: 0.1       # **OLD** : 0.05
 
 
 # ====================================================================
-# Week 12: Pure-Pursuit Navigator
+# Pure-Pursuit Navigator
 # ====================================================================
 navigator_node:
   ros__parameters:
@@ -339,20 +372,20 @@ navigator_node:
       # rate.
       # Larger: smoother control, more CPU.
       # Smaller: jerkier control, less load.
-      rate_hz: 10.0
+      rate_hz: 20.0      # **OLD** : 10.0
 
       # Pure-pursuit lookahead distance in metres. The controller picks
       # the path point this far ahead of the rover and drives a circular
       # arc to it.
       # Larger: gentle, sweeping turns; cuts corners.
       # Smaller: aggressive, tight tracking of the path; can oscillate.
-      lookahead: 1.5
+      lookahead: 1.2       # **OLD** : 1.5
 
       # Maximum forward speed in m/s.
       # Larger: faster mission completion but stresses scan matching and
       #   widens turning radius at the controller.
       # Smaller: slower but safer; better localisation and tighter turns.
-      max_linear_v: 0.25
+      max_linear_v: 0.3     # **OLD** : 0.25
 
       # Maximum angular speed in rad/s.
       # Larger: tighter turns possible at speed, harder on scan matching
@@ -364,7 +397,7 @@ navigator_node:
       # and stops.
       # Larger: stops further from the exact goal; more forgiving.
       # Smaller: stops closer; may overshoot or miss in noisy odometry.
-      goal_tolerance: 0.05
+      goal_tolerance: 0.1   # **OLD** : 0.05
 
       # Seconds without a fresh plan before the navigator stops the rover
       # as a safety fallback. Must comfortably exceed `replan_period`.
