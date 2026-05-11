@@ -1,1 +1,0 @@
-/workspace/succulence_ws/src/succulence_rover_ros/launch/slam_sim.launch.py

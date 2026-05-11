@@ -1,6 +1,0 @@
-[console_scripts]
-motion_model_node = succulence_rover_ros.motion_model:main
-navigator_node = succulence_rover_ros.navigator_node:main
-occupancy_grid_mapper_node = succulence_rover_ros.occupancy_grid_mapper:main
-planner_node = succulence_rover_ros.planner_node:main
-slam_node = succulence_rover_ros.slam_node:main
