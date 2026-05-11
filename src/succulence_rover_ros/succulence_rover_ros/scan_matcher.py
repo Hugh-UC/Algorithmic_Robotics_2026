@@ -23,7 +23,7 @@ References:
 """
 
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Callable
 from scipy.ndimage import maximum_filter
 
 
@@ -34,7 +34,6 @@ class ScanMatcher:
     Aligns two laser scans by searching over candidate relative poses
     and scoring each one using grid correlation.
     """
-
     def __init__(self,
                  search_x: float,
                  search_y: float,
@@ -55,10 +54,10 @@ class ScanMatcher:
         self.local_grid_resolution = local_grid_resolution
         self.min_score = min_score
 
-    # ========================================================================
-    # STUDENT TODO #1: Build Local Occupancy Grid
-    # ========================================================================
 
+    # ========================================================================
+    # Build Local Occupancy Grid
+    # ========================================================================
     def _build_local_grid(self, scan_points: np.ndarray) -> np.ndarray:
         """
         Rasterise scan points into a local occupancy grid for fast correlation.
@@ -119,12 +118,11 @@ class ScanMatcher:
 
         return grid
 
-    # ========================================================================
-    # STUDENT TODO #2: Score Alignment
-    # ========================================================================
 
-    def _score_alignment(self, grid: np.ndarray, scan_points: np.ndarray,
-                         pose: np.ndarray) -> float:
+    # ========================================================================
+    # Score Alignment
+    # ========================================================================
+    def _score_alignment(self, grid: np.ndarray, scan_points: np.ndarray, pose: np.ndarray) -> float:
         """
         Score how well scan_points align with the reference grid
         when transformed by the candidate pose.
@@ -181,12 +179,67 @@ class ScanMatcher:
         # Return total score
         return float(np.sum(hits))
 
-    # ========================================================================
-    # STUDENT TODO #3: Main Scan Matching Function
-    # ========================================================================
 
-    def match(self, scan_ref: np.ndarray, scan_new: np.ndarray,
-              initial_guess: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
+    # ========================================================================
+    # Universal Searcher (scan-to-scan and scan-to-map)
+    # ========================================================================
+    def _coarse_to_fine_search(self, score_fn: Callable[[np.ndarray], float], initial_guess: np.ndarray) -> Tuple[np.ndarray, dict, Tuple[int, int, int], float]:
+        """
+        Universal Coarse-to-Fine grid search.
+
+        Args:
+            score_fn (Callable[[np.ndarray], float]): _description_
+            initial_guess (np.ndarray): _description_
+
+        Returns:
+            Tuple[np.ndarray, dict, Tuple[int, int, int], float]: _description_
+        """
+        # --- phase 1 | coarse ---
+        cx_step, cy_step, ct_step = self.resolution_x * 4.0, self.resolution_y * 4.0, self.resolution_theta * 4.0
+        
+        cx_vals = np.arange(-self.search_x, self.search_x + 1e-6, cx_step)
+        cy_vals = np.arange(-self.search_y, self.search_y + 1e-6, cy_step)
+        ct_vals = np.arange(-self.search_theta, self.search_theta + 1e-6, ct_step)
+
+        best_coarse_score = -1.0
+        best_coarse_offset = np.zeros(3)
+
+        for dx in cx_vals:
+            for dy in cy_vals:
+                for dt in ct_vals:
+                    candidate = initial_guess + np.array([dx, dy, dt])
+                    score = score_fn(candidate)
+                    if score > best_coarse_score:
+                        best_coarse_score = score
+                        best_coarse_offset = np.array([dx, dy, dt])
+
+        # --- phase 2 | fine ---
+        fine_center = initial_guess + best_coarse_offset
+        fx_vals = np.arange(-cx_step, cx_step + 1e-6, self.resolution_x)
+        fy_vals = np.arange(-cy_step, cy_step + 1e-6, self.resolution_y)
+        ft_vals = np.arange(-ct_step, ct_step + 1e-6, self.resolution_theta)
+
+        scores = {}
+        best_fine_score = -1.0
+        best_pose = fine_center.copy()
+        best_idx = (0, 0, 0)
+
+        for ix, dx in enumerate(fx_vals):
+            for iy, dy in enumerate(fy_vals):
+                for it, dt in enumerate(ft_vals):
+                    candidate = fine_center + np.array([dx, dy, dt])
+                    score = score_fn(candidate)
+                    scores[(ix, iy, it)] = score
+                    if score > best_fine_score:
+                        best_fine_score, best_pose, best_idx = score, candidate, (ix, iy, it)
+
+        return best_pose, scores, best_idx, best_fine_score
+
+
+    # ========================================================================
+    # Scan-to-Scan Matching
+    # ========================================================================
+    def match(self, scan_ref: np.ndarray, scan_new: np.ndarray, initial_guess: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
         """
         Match two scans using correlation-based grid search.
 
@@ -218,12 +271,6 @@ class ScanMatcher:
             5. If normalised_score < min_score: return (initial_guess, default_cov, 0.0)
             6. covariance = _estimate_covariance_from_hessian(scores, best_idx, ...)
             7. Return (best_pose, covariance, normalised_score)
-
-        Hints:
-            - Store scores in a dict keyed by (ix, iy, it) integer indices
-            - Handle empty scans (return early with score 0.0)
-            - default_cov = np.diag([0.1, 0.1, 0.05])
-            - The TODO section is ~12-15 lines of code
         """
         default_cov = np.diag([0.1, 0.1, 0.05])
 
@@ -233,82 +280,18 @@ class ScanMatcher:
         # Step 1: Build local occupancy grid from the reference scan
         ref_grid = self._build_local_grid(scan_ref)
 
-        # Step 2: Generate search grid around initial guess
-        dx_guess, dy_guess, dtheta_guess = initial_guess
+        # Step 2: Create lambda wrapper to pass scoring method
+        score_fn = lambda pose: self._score_alignment(ref_grid, scan_new, pose)
 
-        x_values = np.arange(
-            dx_guess - self.search_x,
-            dx_guess + self.search_x + self.resolution_x * 0.5,
-            self.resolution_x
-        )
-        y_values = np.arange(
-            dy_guess - self.search_y,
-            dy_guess + self.search_y + self.resolution_y * 0.5,
-            self.resolution_y
-        )
-        theta_values = np.arange(
-            dtheta_guess - self.search_theta,
-            dtheta_guess + self.search_theta + self.resolution_theta * 0.5,
-            self.resolution_theta
-        )
-
-        # Step 3: Exhaustive search — score every candidate pose
-        scores = {}
-        best_score = -1.0
-        best_pose = initial_guess.copy()
-        best_idx = (0, 0, 0)
-
-        # =============================================
-        # TODO: YOUR CODE HERE
-        # =============================================
-        # Loop over all combinations (ix, x), (iy, y), (it, theta):
-        #   - Build a candidate pose array [x, y, theta]
-        #   - Score it with _score_alignment(ref_grid, scan_new, candidate)
-        #   - Store the score: scores[(ix, iy, it)] = score
-        #   - If this score beats best_score, update best_score, best_pose, best_idx
-        #
-        # After the loop:
-        #   - Compute normalised_score = best_score / len(scan_new)
-        #   - If normalised_score < self.min_score: return (initial_guess, default_cov, 0.0)
-        for ix, x in enumerate(x_values):
-
-            for iy, y in enumerate(y_values):
-
-                for it, theta in enumerate(theta_values):
-
-                    candidate = np.array([x, y, theta])
-                    score = self._score_alignment(ref_grid, scan_new, candidate)
-                    scores[(ix, iy, it)] = score
-
-                    if score > best_score:
-                        best_score = score
-                        best_pose = candidate
-                        best_idx = (ix, iy, it)
+        # Step 3: Coarse-to-fine search over candidate poses
+        best_pose, scores, best_idx, best_score = self._coarse_to_fine_search(score_fn, initial_guess)
         
-        # Vectorised version (optional, not required):
-        """
-        gx, gy, gt =    np.meshgrid(x_values, y_values, theta_values, indexing='ij')
-        candidates =    np.stack([gx, gy, gt], axis=-1).reshape(-1, 3)
-        indices =       np.indices(gx.shape).reshape(3, -1).T
-        
-        for i in range(len(candidates)):
-            candidate = candidates[i]
-            ix, iy, it = indices[i]
-            
-            score = self._score_alignment(ref_grid, scan_new, candidate)
-            scores[(ix, iy, it)] = score
-
-            if score > best_score:
-                best_score, best_pose, best_idx = score, candidate, (ix, iy, it)
-        """
-        
+        # Step 4: Normalise score and check against threshold
         normalised_score = best_score / len(scan_new)
 
         if normalised_score < self.min_score:
             return initial_guess.copy(), default_cov, 0.0 
-        
-        
-        # Step 4: Estimate covariance from the Hessian of the score surface
+
         covariance = self._estimate_covariance_from_hessian(
             scores, best_idx,
             self.resolution_x, self.resolution_y, self.resolution_theta
@@ -317,18 +300,63 @@ class ScanMatcher:
         return best_pose, covariance, normalised_score
 
     # ========================================================================
-    # PROVIDED: Estimate Covariance from Hessian (do not modify)
+    # Scan-to-Map Matching (Extension)
     # ========================================================================
-    #
-    # This function estimates how confident the scan match is by computing
-    # the Hessian (matrix of second derivatives) of the score surface at
-    # the peak. Sharp peak → small covariance (confident). Flat peak →
-    # large covariance (uncertain). See Lecture 08, Section 8.4.
-    #
-    # The covariance is: Sigma = (-H)^{-1}
-    # If -H is not positive definite, the match geometry is degenerate
-    # (e.g., a corridor) and we fall back to a conservative default.
+    def match_to_map(self, global_grid: np.ndarray, map_origin_x: float, map_origin_y: float, map_resolution: float,
+                     scan_new: np.ndarray, initial_guess_global: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Aligns a live scan against the global SLAM occupancy grid.
 
+        Args:
+            global_grid (np.ndarray): _description_
+            map_origin_x (float): _description_
+            map_origin_y (float): _description_
+            map_resolution (float): _description_
+            scan_new (np.ndarray): _description_
+            initial_guess_global (np.ndarray): _description_
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray, float]: _description_
+        """
+        default_cov = np.diag([0.1, 0.1, 0.05])
+        if len(scan_new) == 0:
+            return initial_guess_global.copy(), default_cov, 0.0
+
+        # Step 1: Define specific scoring rules for global scan-to-map using real-world coordinates
+        def score_global(pose: np.ndarray) -> float:
+            c, s = np.cos(pose[2]), np.sin(pose[2])
+
+            # rotate and translate points into global map frame
+            px_prime = c * scan_new[:, 0] - s * scan_new[:, 1] + pose[0]
+            py_prime = s * scan_new[:, 0] + c * scan_new[:, 1] + pose[1]
+            
+            cols = ((px_prime - map_origin_x) / map_resolution).astype(int)
+            rows = ((py_prime - map_origin_y) / map_resolution).astype(int)
+            
+            h, w = global_grid.shape
+            valid = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+            hits = global_grid[rows[valid], cols[valid]] > 0
+            return float(np.sum(hits))
+
+        # Step 2: Perform coarse-to-fine search
+        best_pose, scores, best_idx, best_score = self._coarse_to_fine_search(score_global, initial_guess_global)
+
+        # Step 3: Normalise score and check against threshold
+        normalised_score = best_score / len(scan_new)
+        if normalised_score < self.min_score:
+            return initial_guess_global.copy(), default_cov, 0.0
+
+        cov = self._estimate_covariance_from_hessian(
+            scores, best_idx,
+            self.resolution_x, self.resolution_y, self.resolution_theta
+        )
+
+        return best_pose, cov, normalised_score
+    
+
+    # ========================================================================
+    # Estimate Covariance from Hessian
+    # ========================================================================
     def _estimate_covariance_from_hessian(self,
                                           scores: dict,
                                           best_idx: Tuple[int, int, int],
@@ -412,9 +440,8 @@ class ScanMatcher:
 
 
 # ============================================================================
-# Helper function (provided — do not modify)
+# Helper function
 # ============================================================================
-
 def scans_from_ranges(ranges: np.ndarray, angle_min: float,
                       angle_increment: float, min_range: float = 0.1,
                       max_range: float = 12.0,

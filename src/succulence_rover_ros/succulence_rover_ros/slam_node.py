@@ -40,6 +40,10 @@ class SlamNode(Node):
         self.declare_parameter('slam.map_publish_interval')
         self.declare_parameter('slam.scan_match_cov_xy')
         self.declare_parameter('slam.scan_match_cov_theta')
+        # --- Group 001: Map-Scan Weighting ---
+        self.declare_parameter('slam.map_match_weight', 0.3)        # 30% map, 70% scan
+        self.declare_parameter('slam.scan_rate_limit', 10.0)        # Hz, slam scan limit
+        # -------------------------------------
 
         self.declare_parameter('scan_matcher.search_x')
         self.declare_parameter('scan_matcher.search_y')
@@ -85,6 +89,10 @@ class SlamNode(Node):
         map_publish_interval = self.get_parameter('slam.map_publish_interval').value
         self.scan_match_cov_xy = self.get_parameter('slam.scan_match_cov_xy').value
         self.scan_match_cov_theta = self.get_parameter('slam.scan_match_cov_theta').value
+        # --- Group 001: Map-Scan Weighting ---
+        self.map_match_weight = self.get_parameter('slam.map_match_weight').value
+        self.scan_rate_limit = self.get_parameter('slam.scan_rate_limit').value
+        # -------------------------------------
 
         self.alpha1 = self.get_parameter('motion_model.alpha1').value
         self.alpha2 = self.get_parameter('motion_model.alpha2').value
@@ -134,8 +142,6 @@ class SlamNode(Node):
         self.keyframe_count = 0
 
         self.last_scan_time = 0.0
-        self.scan_rate_limit = 10.0  # match the sim's 10 Hz scan topic; the per-scan
-                                     # keyframe check is cheap, only matched scans cost
 
         self.map_pub = self.create_publisher(OccupancyGridMsg, map_topic, 10)
         self.odom_pub = self.create_publisher(Odometry, slam_odom_topic, 10)
@@ -417,7 +423,8 @@ def main(args=None):
             f'{node.pose_graph.get_num_nodes()} nodes, '
             f'{node.pose_graph.get_num_edges()} edges')
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
