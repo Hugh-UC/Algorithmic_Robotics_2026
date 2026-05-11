@@ -4,9 +4,6 @@ A* Path Planner (no ROS dependencies)
 8-connected grid search with octile heuristic. Operates on a 2D bool array
 where True = blocked (obstacle or inflated obstacle) and False = free.
 
-Student task (1 TODO):
-  - TODO #1: octile heuristic
-
 References:
   - Hart, Nilsson, Raphael (1968) — original A* paper
   - Lecture 12: Path Planning
@@ -58,11 +55,14 @@ def _octile(a: Cell, b: Cell) -> float:
     return h
 
 
-def inflate_obstacles(grid: np.ndarray, radius_cells: int,
+def inflate_obstacles(grid: np.ndarray, radius_cells: float,
                       occupancy_threshold: int,
-                      treat_unknown_as_obstacle: bool) -> np.ndarray:
+                      treat_unknown_as_obstacle: bool, inflation_weight: float = 5.0) -> np.ndarray:
     """
-    Return a bool grid of 'blocked' cells after inflating obstacles by
+    Returns a float grid where np.inf is a solid wall, 0.0 is open space, 
+    and values in between act as a penalty gradient pushing the robot away from walls.
+
+    OLD: "Return a bool grid of 'blocked' cells after inflating obstacles by
     radius_cells. Provided — you do not need to modify this.
 
     Unknown cells (-1) are blocked or free depending on the flag.
@@ -72,55 +72,71 @@ def inflate_obstacles(grid: np.ndarray, radius_cells: int,
     if treat_unknown_as_obstacle:
         blocked |= grid < 0
 
-    if radius_cells <= 0:
-        return blocked
+    
+    h, w = grid.shape
+    # initialize everything to 0.0 (free space)
+    cost_map = np.zeros((h, w), dtype=np.float32)
+    
+    # mark solid obstacles as mathematically impassable
+    cost_map[blocked] = np.inf
 
-    h, w = blocked.shape
-    out = np.zeros_like(blocked)
+
+    if radius_cells <= 0:
+        return cost_map
+    
+    # calculate integer boundary for array slicing
+    bound_r = int(np.ceil(radius_cells))
+
     rows, cols = np.where(blocked)
     for r, c in zip(rows, cols):
-        r0 = max(0, r - radius_cells)
-        r1 = min(h, r + radius_cells + 1)
-        c0 = max(0, c - radius_cells)
-        c1 = min(w, c + radius_cells + 1)
-        out[r0:r1, c0:c1] = True
-    return out
+        r0 = max(0, r - bound_r)
+        r1 = min(h, r + bound_r + 1)
+        c0 = max(0, c - bound_r)
+        c1 = min(w, c + bound_r + 1)
+
+        for rr in range(r0, r1):
+            for cc in range(c0, c1):
+                if cost_map[rr, cc] == np.inf:
+                    continue
+                
+                dist = np.hypot(rr - r, cc - c)
+                if dist <= radius_cells:
+                    penalty = inflation_weight * (1.0 - (dist / radius_cells))
+                    cost_map[rr, cc] = max(cost_map[rr, cc], penalty)
+                    
+    return cost_map
 
 
-def astar_search(blocked: np.ndarray,
+def astar_search(cost_map: np.ndarray,
                  start: Cell,
-                 goal: Cell) -> Optional[List[Cell]]:
+                 goal: Cell,
+                 epsilon: float = 1.0) -> Optional[List[Cell]]:
     """
     Run A* over an 8-connected grid.
 
     Args:
-        blocked: 2D bool array — True where the robot cannot pass.
+        cost_map: 2D float array — np.inf where the robot cannot pass, 0.0 where it can.
         start:   (row, col) start cell (must be unblocked).
-        goal:    (row, col) goal cell (must be unblocked).
-
+        goal:    (row, col) goal cell (must be unblocked). 
+        epsilon: Heuristic weight — higher values make A* more greedy and
+                 faster to run but less likely to find a solution.
     Returns:
         List of (row, col) cells from start to goal inclusive, or None
         if unreachable.
     """
-    h, w = blocked.shape
+    h, w = cost_map.shape
 
-    # --- PROVIDED: Boundary and trivial-case checks ---
+    # --- boundary and trivial-case checks ---
     if not (0 <= start[0] < h and 0 <= start[1] < w):
         return None
     if not (0 <= goal[0] < h and 0 <= goal[1] < w):
         return None
-    if blocked[start] or blocked[goal]:
+    if cost_map[start] == np.inf or cost_map[goal] == np.inf:
         return None
     if start == goal:
         return [start]
 
-    # --- PROVIDED: Initialise A*'s data structures ---
-    #   open_heap: priority queue of (f, h, counter, cell). The counter
-    #              breaks ties so equal-f cells pop in insertion order.
-    #   g_score:   best-known cost from start to each cell so far.
-    #   came_from: predecessor along the best-known path (for path
-    #              reconstruction once the goal is popped).
-    #   closed:    cells that have already been expanded.
+
     open_heap: List[Tuple[float, float, int, Cell]] = []
     counter = 0
     g_score = {start: 0.0}
@@ -131,12 +147,12 @@ def astar_search(blocked: np.ndarray,
     heapq.heappush(open_heap, (h0, h0, counter, start))
 
     while open_heap:
-        # --- PROVIDED: Pop the lowest-f cell, skip stale heap entries ---
+        # --- pop the lowest-f cell, skip stale heap entries ---
         _, _, _, current = heapq.heappop(open_heap)
         if current in closed:
             continue
 
-        # --- PROVIDED: Goal check + path reconstruction via came_from ---
+        # --- goal check + path reconstruction via came_from ---
         if current == goal:
             path = [current]
             while current in came_from:
@@ -149,35 +165,39 @@ def astar_search(blocked: np.ndarray,
         cg = g_score[current]
         cr, cc = current
 
-        # --- PROVIDED: Iterate over 8 neighbours with the defensive checks
-        #     (bounds, blocked, closed, corner-cutting). These aren't
-        #     interesting algorithmically — they just keep the search safe.
+        # --- iterate over 8 neighbours with the defensive checks
         for dr, dc, step in _NEIGHBORS:
             nr, nc = cr + dr, cc + dc
             if not (0 <= nr < h and 0 <= nc < w):
                 continue
-            if blocked[nr, nc]:
+            
+            # read penalty from cost map
+            penalty = cost_map[nr, nc]
+            if penalty == np.inf:
                 continue
-            # Stop the rover squeezing diagonally through a 1-cell gap.
+
+            # prevent diagonal squeezing through 1-cell gap
             if dr != 0 and dc != 0:
-                if blocked[cr + dr, cc] and blocked[cr, cc + dc]:
+                if cost_map[cr + dr, cc] == np.inf and cost_map[cr, cc + dc] == np.inf:
                     continue
+
             neighbor = (nr, nc)
             if neighbor in closed:
                 continue
 
-            # --- PROVIDED: Edge relaxation (the heart of A*) ---
-            # If reaching `neighbor` via `current` is cheaper than the
-            # best route we've seen so far, record the new route and
-            # re-queue with f = g + h. That `f = g + h` line is what
-            # makes this A* and not Dijkstra: the heuristic biases the
-            # heap toward the goal so we expand far fewer cells.
-            tentative_g = cg + step
+            # --- edge relaxation (the heart of A*) ---
+            tentative_g = cg + step + penalty
+
             if tentative_g < g_score.get(neighbor, np.inf):
                 g_score[neighbor] = tentative_g
                 came_from[neighbor] = current
+
+                # heuristic estimate from neighbor to goal
                 hscore = _octile(neighbor, goal)
-                f = tentative_g + hscore
+
+                # multiply heuristic by epsilon for weighted A*
+                f = tentative_g + (hscore * epsilon)
+
                 counter += 1
                 heapq.heappush(open_heap, (f, hscore, counter, neighbor))
 
