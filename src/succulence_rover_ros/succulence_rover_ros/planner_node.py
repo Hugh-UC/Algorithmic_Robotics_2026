@@ -54,6 +54,10 @@ class PlannerNode(Node):
         self.declare_parameter('costmaps.local.max_obstacle_range', 3.0)
         self.declare_parameter('costmaps.local.min_obstacle_range', 0.1)
 
+        self.declare_parameter('lidar.x_offset', 0.0)
+        self.declare_parameter('lidar.y_offset', 0.0)
+        self.declare_parameter('lidar.yaw_offset', 0.0)
+
         self.declare_parameter('goal.x')
         self.declare_parameter('goal.y')
         self.declare_parameter('goal.tolerance', 0.05)
