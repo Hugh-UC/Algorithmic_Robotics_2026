@@ -85,7 +85,7 @@ occupancy_grid_mapper:
     # How often the occupancy grid is published, in Hz.
     # Larger: smoother updates in RViz, more bandwidth/CPU.
     # Smaller: laggier visualisation, less load.
-    map_publish_rate: 1.0
+    map_publish_rate: 2.0
 
     occupancy_grid:
       # Cell size in metres. Drives every other grid dimension.
@@ -152,7 +152,6 @@ slam_node:
   ros__parameters:
     scan_topic: "/succulence/scan"          # physical: "/scan"
     odom_topic: "/succulence/odom"          # physical: "/odom"
-
     # Outputs from SLAM.
     map_topic: "/succulence/map"
     slam_odometry_topic: "/succulence/slam/odometry"
@@ -209,7 +208,11 @@ slam_node:
       # Smaller: scan-to-scan matches have more influence on corrected pose.
       map_match_weight: 0.3
 
-      scan_rate_limit: 10.0     # Maximum rate at which incoming scans are processed
+      # Maximum rate at which incoming scans are processed
+      # Larger: more responsive to new data but higher CPU.
+      # Smaller: cheaper but the map and pose may lag behind the latest
+      #   scan data.
+      scan_rate_limit: 20.0           # **WORKING**: 10.0
       # -------------------------------------
 
     # See motion_model.lidar above for offsets.
@@ -309,8 +312,14 @@ planner_node:
       heuristic_weight: 1.2       # 1.0 = Optimal (no change), >1.0 = Greedy/Fast
       data_weight: 0.3            # "Path Fidelity" (High = sticks to A* grid, Low = smooths out)
       smooth_weight: 0.25         # "Rubber Band" (High = cuts corners tightly)
+      goal_smooth_distance: 2.0   # Distance from the goal (in cells) at which smoothing is relaxed to allow tighter turns.
+      smooth_tolerance: 0.01      # Numerical stopping condition for the Gradient Descent algorithm inside _smooth_path function.
 
     costmaps:
+      # Planner uses costmap to inflate obstacles and plan around them.
+      # Costmap is also published for visualisation in RViz2.
+      mode: "both"        # Options: "both", "global", "local", "none", defaults: "both"
+
       # Cell value (0..100) at or above which a cell is treated as an
       # obstacle by A*.
       # Larger: only highly-confident occupied cells block the planner;
@@ -355,7 +364,7 @@ planner_node:
     goal:
       x: 50.0
       y: 3.0
-      tolerance: 0.1       # **OLD** : 0.05
+      tolerance: 0.1
 
 
 # ====================================================================
