@@ -47,11 +47,19 @@ def generate_launch_description():
         default_value='sim',
         description='Target environment: "sim" or "physical"'
     )
+    # define costmap mode launch argument ('both', 'global', 'local', or 'none')
+    costmap_mode_arg = DeclareLaunchArgument(
+        'costmap',
+        default_value='both',
+        description='Which costmaps to use: "both", "global", "local", or "none"'
+    )
 
     # validate mode argument
     mode = LaunchConfiguration('mode')
     is_physical = EqualsSubstitution(mode, 'physical')
     is_sim = EqualsSubstitution(mode, 'sim')
+
+    costmap_mode = LaunchConfiguration('costmap')
 
     # load appropriate params file (mode-specified)
     params_file = [config_dir, '/params_', mode, '.yaml']
@@ -114,7 +122,10 @@ def generate_launch_description():
             executable='planner_node',
             name='planner_node',
             output='screen',
-            parameters=[params_file],
+            parameters=[
+                params_file,
+                {'costmap_mode': costmap_mode}
+            ],
         ),
 
         Node(
@@ -143,6 +154,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         mode_arg,
+        costmap_mode_arg,
         odom_frame_arg,
         base_link_frame_arg,
         lidar_frame_arg,
