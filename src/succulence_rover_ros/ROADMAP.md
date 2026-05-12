@@ -1,33 +1,32 @@
 # ROADMAP
 
-## Edges:
+## ✅ Completed Architectural Upgrades
 
-- Scan to Scan edges,
-- Scan to Map edges,
+### 1. Gradient Descent Path Smoothing (The "Drunk Driving" Fix)
+* **The Problem:** A* searches an 8-connected grid, resulting in extremely jagged paths consisting exclusively of straight lines and sharp 45° or 90° corners. When the path follower encountered these, the curvature-limited speed cap forced the robot to slam on the brakes.
+* **The Solution:** Implemented a gradient descent smoothing algorithm in `planner_node.py`. The A* waypoints are iteratively pulled into a smooth B-Spline-like curve. The Pure Pursuit controller can now maintain a high, constant velocity ($v$) all the way to the goal without stuttering.
 
+### 2. Weighted A* (High-Speed Planning)
+* **The Problem:** Exhaustive A* search was too slow to react to dynamic obstacles (like Kevin) in real-time.
+* **The Solution:** Artificially inflated the heuristic by multiplying it by a weight (`f = tentative_g + (epsilon * hscore)`). This transforms the search into Weighted A*, making it vastly greedier. The planner now runs in a fraction of the time, allowing us to hit a 5Hz replanning rate for instant reflex dodging.
 
-## Fixing the "Aggressive Slow Down" (Smooth Navigation)
+### 3. Dual Gradient Costmaps (Wall Hugging Fix)
+* **The Problem:** The original binary `inflate_obstacles` function created hard True/False walls, causing the robot to clip corners or refuse to plan through narrow doorways.
+* **The Solution:** Replaced boolean grids with float gradients. Walls are `np.inf`, but the surrounding inflation cells carry a decaying penalty cost. By injecting this into the A* `tentative_g` calculation, the robot naturally prefers to drive straight down the middle of hallways. Includes a toggleable Local Costmap for dynamic obstacle avoidance.
 
-### The Root Cause:
-Look at astar.py. It searches an 8-connected grid. This means your generated path is extremely jagged, consisting exclusively of straight lines and sharp 45° or 90° corners.
+### 4. Coarse-to-Fine Scan Matching
+* **The Problem:** The original `match()` function used an exhaustive, brute-force 3D grid search ($O(N^3)$) that consumed massive amounts of CPU.
+* **The Solution:** Rewrote the matcher to perform a "coarse" search with large steps to find the general peak, followed by a "fine" search strictly around that local peak. SLAM now runs flawlessly with significantly reduced computational overhead.
 
-### The Reaction:
-Now look at path_follower.py. Whenever the robot reaches one of these artificial A* corners, heading_error spikes. The controller includes the line v *= max(0.0, np.cos(heading_error)) and a curvature-limited speed cap. The robot mathematically has to slam on the brakes to make the jagged turn, then floors it once it's straight again.
+---
 
-### How to fix it:
-#### Easy Fix:
-Increase control.lookahead in your params. A longer lookahead makes the robot "cut corners" and naturally smooths out the jagged A* path, keeping speeds high.
+## 🚀 Future Enhancements
 
-#### Advanced Fix (Competition Winner):
-Build a Path Smoothing Node (or just add a function in planner_node.py). Before publishing the nav_msgs/Path, run the A* waypoints through a smoothing algorithm (like Gradient Descent path smoothing or generating a B-Spline). If the path is a smooth curve, the Pure Pursuit controller will maintain a high, constant v all the way to Kevin.
+### 1. Dynamic Obstacle Tracking (Velocity Prediction)
+Currently, our Local Costmap treats Kevin as a static wall every time it refreshes. If we implement a basic Kalman Filter to track moving clusters in the laser scan, we could project Kevin's velocity vector and add a "forward penalty" to the costmap, allowing the robot to route *behind* him instead of just stopping in front of him.
 
+### 2. Adaptive Pure Pursuit Lookahead
+Currently, `control.lookahead` is a fixed distance. We could map the lookahead distance dynamically to the robot's current linear velocity ($v$). At high speeds, the robot looks further ahead for smooth, sweeping turns. As it slows down for tight corridors, the lookahead dynamically shrinks to ensure strict path adherence.
 
-## Other Tricks
-### Weighted A (Speed up planning by 10x):*
-In astar.py, you calculate f = tentative_g + hscore. If you artificially inflate the heuristic by multiplying it by a weight (e.g., f = tentative_g + (1.5 * hscore)), it becomes Weighted A*. It will search drastically fewer cells, meaning your planner can run much faster (e.g., replan every 0.2 seconds instead of 1.0 seconds). Faster replanning means the robot reacts to pop-up obstacles instantly.
-
-### Gradient Costmaps (Don't hug the walls):
-Currently, your inflate_obstacles function creates a hard binary wall (True/False). If you change this to a gradient (e.g., cost is 100 at the wall, 50 a cell away, 10 two cells away) and add that cost to tentative_g in A*, the robot will naturally prefer to drive right down the middle of hallways. This allows you to safely crank up max_linear_v without worrying about clipping corners.
-
-### Coarse-to-Fine Scan Matching:
-Your match() function in scan_matcher.py uses an exhaustive, brute-force 3D grid search ($O(N^3)$). It eats massive amounts of CPU. If you rewrite it to do a "coarse" search (big steps), find the peak, and then do a "fine" search (small steps) just around that peak, SLAM will run flawlessly. You can then increase your map_publish_rate and control.rate_hz, making the whole robot vastly more responsive.
+### 3. Frontier Exploration (Auto-Mapping)
+Instead of relying on a hardcoded coordinate to drive to, we could write an exploration node that analyzes the SLAM occupancy grid, identifies "Frontiers" (the boundary between known free space and unknown space), and continuously publishes the nearest frontier as the new A* goal until the entire lab is mapped.
