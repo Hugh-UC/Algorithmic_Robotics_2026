@@ -38,8 +38,11 @@ class PlannerNode(Node):
         self.declare_parameter('planning.heuristic_weight', 1.2)
         self.declare_parameter('planning.data_weight', 0.1)
         self.declare_parameter('planning.smooth_weight', 0.5)
+        self.declare_parameter('planning.goal_smooth_distance', 2.0)
+        self.declare_parameter('planning.smooth_tolerance', 0.01)
 
         # Costmaps
+        self.declare_parameter('costmaps.mode', 'both')
         self.declare_parameter('costmaps.occupancy_threshold')
         self.declare_parameter('costmaps.treat_unknown_as_obstacle')
 
@@ -65,6 +68,7 @@ class PlannerNode(Node):
         self.replan_period = self.get_parameter('planning.replan_period').value
         
         # Save costmap settings
+        self.costmap_mode = self.get_parameter('costmaps.mode').value.lower()
         self.occ_threshold = int(self.get_parameter('costmaps.occupancy_threshold').value)
         self.unknown_as_obstacle = bool(self.get_parameter('costmaps.treat_unknown_as_obstacle').value)
         
@@ -75,6 +79,10 @@ class PlannerNode(Node):
         self.local_inf_weight = float(self.get_parameter('costmaps.local.inflation_weight').value)
         self.local_max_range = float(self.get_parameter('costmaps.local.max_obstacle_range').value)
         self.local_min_range = float(self.get_parameter('costmaps.local.min_obstacle_range').value)
+
+        self.lidar_x_offset = float(self.get_parameter('lidar.x_offset').value)
+        self.lidar_y_offset = float(self.get_parameter('lidar.y_offset').value)
+        self.lidar_yaw_offset = float(self.get_parameter('lidar.yaw_offset').value)
 
         self.goal_x = float(self.get_parameter('goal.x').value)
         self.goal_y = float(self.get_parameter('goal.y').value)
@@ -144,15 +152,15 @@ class PlannerNode(Node):
 
     def _world_to_cell(self, x: float, y: float, info) -> tuple[int, int]:
         """
-        _summary_
+        Converts world coordinates (meters) to grid cell indices.
 
         Args:
-            x (float): _description_
-            y (float): _description_
-            info (_type_): _description_
+            x (float): World X coordinate.
+            y (float): World Y coordinate.
+            info (MapMetaData): ROS MapMetaData containing resolution and origin.
 
         Returns:
-            tuple[int, int]: _description_
+            tuple[int, int]: The corresponding (row, col) grid indices.
         """
         col = int((x - info.origin.position.x) / info.resolution)
         row = int((y - info.origin.position.y) / info.resolution)
@@ -160,24 +168,48 @@ class PlannerNode(Node):
 
     def _cell_to_world(self, row: int, col: int, info) -> tuple[float, float]:
         """
-        _summary_
+        Converts grid cell indices to world coordinates (meters).
 
         Args:
-            row (int): _description_
-            col (int): _description_
-            info (_type_): _description_
+            row (int): Grid row index.
+            col (int): Grid column index.
+            info (MapMetaData): ROS MapMetaData containing resolution and origin.
 
         Returns:
-            tuple[float, float]: _description_
+            tuple[float, float]: The corresponding (X, Y) world coordinates of the cell center.
         """
         x = info.origin.position.x + (col + 0.5) * info.resolution
         y = info.origin.position.y + (row + 0.5) * info.resolution
         return x, y
+    
+    def _clear_inf_halo(self, cost_map: np.ndarray, center: tuple[int, int], radius_cells: float):
+        """
+        Clears solid np.inf walls around a center point so A* doesn't get trapped.
+        Demotes the solid wall to a heavy gradient penalty so it remains navigable.
+
+        Args:
+            cost_map (np.ndarray): The 2D float array representing the costmap.
+            center (tuple[int, int]): The (row, col) target center to clear around.
+            radius_cells (float): The radial distance in cells to clear.
+        """
+        h, w = cost_map.shape
+        bound = int(np.ceil(radius_cells))
+        r0, r1 = max(0, center[0] - bound), min(h, center[0] + bound + 1)
+        c0, c1 = max(0, center[1] - bound), min(w, center[1] + bound + 1)
+        
+        for r in range(r0, r1):
+            for c in range(c0, c1):
+                if cost_map[r, c] == np.inf:
+                    dist = np.hypot(r - center[0], c - center[1])
+                    if dist <= radius_cells:
+                        # Demote impassable wall to a high-cost navigable zone
+                        cost_map[r, c] = self.global_inf_weight
 
     def _replan(self):
         """
         Generates a path by overlaying live dynamic obstacles (Local Costmap) 
-        on top of the pre-baked static map (Global Costmap).
+        on top of the pre-baked static map (Global Costmap), computes A*,
+        smooths the path, and publishes to ROS topics.
         """
         # ----------------------------------------------------
         # 1: Get latest Map, Odom, and Scan Data
@@ -186,13 +218,23 @@ class PlannerNode(Node):
             return
 
         info = self.global_map_info
-        cost_map = self.global_costmap.copy()
+
+        if self.costmap_mode in ['both', 'global'] and self.global_costmap is not None:
+            cost_map = self.global_costmap.copy()
+        else:
+            cost_map = np.zeros((info.height, info.width), dtype=np.float32)
 
         # ----------------------------------------------------
         # 2: Inject Local Costmap
         # ----------------------------------------------------
-        if self.latest_scan is not None:
+        if self.costmap_mode in ['both', 'local'] and self.latest_scan is not None:
             robot_x, robot_y = self.robot_xy
+
+            # Project laser scan into world frame, find obstacle locations in grid
+            c_r, s_r = np.cos(self.robot_theta), np.sin(self.robot_theta)
+            lidar_x = robot_x + c_r * self.lidar_x_offset - s_r * self.lidar_y_offset
+            lidar_y = robot_y + s_r * self.lidar_x_offset + c_r * self.lidar_y_offset
+
             ranges = np.array(self.latest_scan.ranges)
             angle_min = self.latest_scan.angle_min
             angle_inc = self.latest_scan.angle_increment
@@ -203,8 +245,8 @@ class PlannerNode(Node):
                 if np.isnan(r) or r < self.local_min_range or r > self.local_max_range:
                     continue
 
-                beam_angle = self.robot_theta + angle_min + i * angle_inc
-                ox, oy = robot_x + r * np.cos(beam_angle), robot_y + r * np.sin(beam_angle)
+                beam_angle = self.robot_theta + self.lidar_yaw_offset + angle_min + i * angle_inc
+                ox, oy = lidar_x + r * np.cos(beam_angle), lidar_y + r * np.sin(beam_angle)
                 
                 col = int((ox - info.origin.position.x) / info.resolution)
                 row = int((oy - info.origin.position.y) / info.resolution)
@@ -254,9 +296,9 @@ class PlannerNode(Node):
             self._publish_empty_path()
             return
 
-        # unblock start cell if robot spawned inside inflation zone (wall = np.inf)
-        if cost_map[start] == np.inf:
-            cost_map[start] = 0.0
+        # clear inflation halos around start and goal so A* doesn't get trapped
+        self._clear_inf_halo(cost_map, start, self.local_inf_radius)
+        self._clear_inf_halo(cost_map, goal, self.local_inf_radius)
 
         # get heuristic weight from parameters
         epsilon : float | None = self.get_parameter('planning.heuristic_weight').value
@@ -282,9 +324,11 @@ class PlannerNode(Node):
         # grab smoothing weights from params
         data_w : float | None = self.get_parameter('planning.data_weight').value
         smooth_w : float | None = self.get_parameter('planning.smooth_weight').value
+        smooth_dist : float | None = self.get_parameter('planning.goal_smooth_distance').value
+        smooth_tol : float | None = self.get_parameter('planning.smooth_tolerance').value
 
         # smooth the trajectory
-        smoothed_world_path = self._smooth_path(world_path, data_weight=data_w, smooth_weight=smooth_w)
+        smoothed_world_path = self._smooth_path(world_path, data_weight=data_w, smooth_weight=smooth_w, goal_smooth_dist=smooth_dist, tolerance=smooth_tol)
 
         # ----------------------------------------------------
         # 5: Publish Smoothed Nav Path
@@ -334,20 +378,21 @@ class PlannerNode(Node):
 
 
 
-    def _smooth_path(self, path: list[tuple[float, float]], data_weight: float, smooth_weight: float, tolerance: float = 0.01):
+    def _smooth_path(self, path: list[tuple[float, float]], data_weight: float, smooth_weight: float, goal_smooth_dist: float = 2.0, tolerance: float = 0.01):
         """
         Gradient descent path smoothing.
 
         Args:
-            path (list[tuple[float, float]]): _description_
-            data_weight (float): _description_
-            smooth_weight (float): _description_
-            tolerance (float, optional): _description_. Defaults to 0.001.
+            path (list[tuple[float, float]]): The raw list of (X, Y) waypoints from A*.
+            data_weight (float): The anchor strength pulling waypoints back to original A* positions.
+            smooth_weight (float): The tension strength pulling waypoints into straight lines.
+            goal_smooth_dist (float, optional): Path length limit below which smoothing is disabled. Defaults to 2.0.
+            tolerance (float, optional): Delta threshold for loop convergence. Defaults to 0.01.
 
         Returns:
-            _type_: _description_
+            list[tuple[float, float]]: The smoothed trajectory.
         """
-        if len(path) <= 2:
+        if len(path) <= goal_smooth_dist:
             return path
         
         new_path = [list(p) for p in path]
@@ -370,7 +415,7 @@ class PlannerNode(Node):
 
     def _publish_empty_path(self):
         """
-        _summary_
+        Publishes an empty path to halt the navigator node when planning fails.
         """
         empty = Path()
         empty.header.stamp = self.get_clock().now().to_msg()
@@ -379,10 +424,10 @@ class PlannerNode(Node):
 
     def _log_failure(self, reason: str):
         """
-        _summary_
+        Logs planning failures, throttling output to prevent terminal spam.
 
         Args:
-            reason (str): _description_
+            reason (str): The string description of the failure cause.
         """
         self.consecutive_failures += 1
         # Log the first failure and then once every ~10 to avoid spam.
