@@ -1,5 +1,5 @@
 """
-Bayesian Occupancy Grid Mapping (Week 6)
+Bayesian Occupancy Grid Mapping
 
 This module builds a 2D occupancy grid map from laser scans and robot poses.
 It uses log-odds representation for numerically stable Bayesian updates,
@@ -8,20 +8,21 @@ and Bresenham's algorithm for ray-tracing through the grid.
 When driven by dead-reckoning poses (from the motion model), the map will
 develop "ghost walls" — the same physical wall appearing twice because the
 robot's pose estimate was wrong on the second pass. These ghost walls are
-the motivation for scan matching (Week 7) and SLAM (Week 8).
+the motivation for scan matching and SLAM.
 
-The occupancy grid theory (log-odds, Bresenham ray-tracing) will be covered
-in the Week 6 lecture. After that lecture, revisit this file and trace
-through _ray_trace() and update() to understand how the map is built.
+Usage: The OccupancyGrid class implements the core mapping algorithm. The
+        OccupancyGridMapperNode is a ROS2 node that subscribes to laser
+        scans and odometry, updates the occupancy grid, and publishes it as
+        a ROS message for visualisation in RViz and use by the planner.
 
 References:
-  - Thrun, Burgard, Fox, "Probabilistic Robotics" (2005), Chapter 9
-  - Lecture 06: Occupancy Grids and Scan Matching
+    - Thrun, Burgard, Fox, "Probabilistic Robotics" (2005), Chapter 9
+    - Lecture 06: Occupancy Grids and Scan Matching
 """
 
 import array
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Optional, Iterable, Any
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
@@ -35,22 +36,36 @@ from scipy.spatial.transform import Rotation
 # ============================================================================
 # Helper functions
 # ============================================================================
+def probability_to_log_odds(p : np.ndarray | list[Any] | tuple[Any] | float | int) -> np.ndarray | np.floating:
+    """
+    Convert probability to log-odds: L = log(p / (1-p)).
 
-def probability_to_log_odds(p: float) -> float:
-    """Convert probability to log-odds: L = log(p / (1-p))."""
+    Args:
+        p: Probability in the range (0, 1)
+
+    Returns:
+        Log-odds value (can be any real number)
+    """
     p = np.clip(p, 1e-10, 1 - 1e-10)
     return np.log(p / (1 - p))
 
 
-def log_odds_to_probability(l: float) -> float:
-    """Convert log-odds to probability: p = 1 / (1 + exp(-L))."""
+def log_odds_to_probability(l : np.ndarray | float | int) -> np.ndarray | np.floating:
+    """
+    Convert log-odds to probability: p = 1 / (1 + exp(-L)).
+
+    Args:
+        l: Log-odds value (can be any real number)
+
+    Returns:
+        Probability in the range (0, 1)
+    """
     return 1.0 / (1.0 + np.exp(-l))
 
 
 # ============================================================================
 # OccupancyGrid — the core algorithm class
 # ============================================================================
-
 class OccupancyGrid:
     """
     2D occupancy grid using Bayesian log-odds updates.
@@ -78,16 +93,16 @@ class OccupancyGrid:
                  lidar_y_offset: float,
                  lidar_yaw_offset: float):
         self.resolution = resolution
-        self.width = width
-        self.height = height
-        self.origin_x = origin_x
-        self.origin_y = origin_y
+        self.width      = width
+        self.height     = height
+        self.origin_x   = origin_x
+        self.origin_y   = origin_y
 
         # Convert probability parameters to log-odds for the update rule
-        self.log_odds_occ = probability_to_log_odds(log_odds_occupied)
-        self.log_odds_free = probability_to_log_odds(log_odds_free)
-        self.log_odds_max = log_odds_max
-        self.log_odds_min = log_odds_min
+        self.log_odds_occ : float   = probability_to_log_odds(log_odds_occupied)
+        self.log_odds_free : float  = probability_to_log_odds(log_odds_free)
+        self.log_odds_max : float   = log_odds_max
+        self.log_odds_min : float   = log_odds_min
 
         self.max_range = max_range
         self.min_range = min_range
@@ -95,9 +110,9 @@ class OccupancyGrid:
         # Lidar mounting offset relative to base_link
         # Set these to match your robot's TF: base_link → lidar_link
         # Default (0, 0, 0) = lidar is at the same position/orientation as base_link
-        self.lidar_x_offset = lidar_x_offset
-        self.lidar_y_offset = lidar_y_offset
-        self.lidar_yaw_offset = lidar_yaw_offset
+        self.lidar_x_offset     = lidar_x_offset
+        self.lidar_y_offset     = lidar_y_offset
+        self.lidar_yaw_offset   = lidar_yaw_offset
 
         # Grid initialised to zero log-odds (= 50% probability = unknown)
         self.grid = np.zeros((height, width), dtype=np.float32)
@@ -123,19 +138,35 @@ class OccupancyGrid:
         return row, col
 
     def grid_to_world(self, row: int, col: int) -> Tuple[float, float]:
-        """Convert grid coordinates to world coordinates (cell centre)."""
+        """
+        Convert grid coordinates to world coordinates (cell centre).
+
+        Args:
+            row: Grid row index
+            col: Grid column index
+
+        Returns:
+            (x, y) tuple — world coordinates of the cell centre
+        """
         x = self.origin_x + (col + 0.5) * self.resolution
         y = self.origin_y + (row + 0.5) * self.resolution
         return x, y
 
     def is_valid_cell(self, row: int, col: int) -> bool:
-        """Check if grid cell is within bounds."""
+        """
+        Check if grid cell is within bounds.
+
+        Args:
+            row: Grid row index
+            col: Grid column index
+
+        Returns: True if (row, col) is a valid cell in the grid, False otherwise
+        """
         return 0 <= row < self.height and 0 <= col < self.width
 
     # ========================================================================
-    # Bresenham's Line Algorithm (see Week 6 lecture for theory)
+    # Bresenham's Line Algorithm
     # ========================================================================
-
     def _ray_trace(self, start: Tuple[int, int], end: Tuple[int, int]) -> list:
         """
         Trace a line from start to end using Bresenham's algorithm.
@@ -198,9 +229,8 @@ class OccupancyGrid:
         return cells
 
     # ========================================================================
-    # Bayesian Occupancy Grid Update (see Week 6 lecture for theory)
+    # Bayesian Occupancy Grid Update
     # ========================================================================
-
     def update(self, pose: np.ndarray, ranges: np.ndarray,
                angle_min: float, angle_increment: float):
         """
@@ -223,6 +253,7 @@ class OccupancyGrid:
         # Compute lidar position in world frame (apply mounting offset)
         c_r = np.cos(robot_theta)
         s_r = np.sin(robot_theta)
+
         lidar_x = robot_x + c_r * self.lidar_x_offset - s_r * self.lidar_y_offset
         lidar_y = robot_y + s_r * self.lidar_x_offset + c_r * self.lidar_y_offset
 
@@ -267,7 +298,6 @@ class OccupancyGrid:
     # ========================================================================
     # Provided helper methods (do not modify)
     # ========================================================================
-
     def get_probability_grid(self) -> np.ndarray:
         """Convert log-odds grid to probability grid [0, 1]."""
         return log_odds_to_probability(self.grid)
@@ -305,7 +335,6 @@ class OccupancyGrid:
 # ============================================================================
 # OccupancyGridMapperNode — the ROS2 node (provided, do not modify)
 # ============================================================================
-
 class OccupancyGridMapperNode(Node):
     """
     ROS2 node that builds an occupancy grid from laser scans and odometry.
@@ -322,56 +351,67 @@ class OccupancyGridMapperNode(Node):
         super().__init__('occupancy_grid_mapper')
 
         # --- Parameters (all values come from params.yaml) ---
-        self.declare_parameter('scan_topic')
-        self.declare_parameter('odom_topic')
-        self.declare_parameter('map_topic')
-        self.declare_parameter('map_publish_rate')
+        param_defaults: dict[str, str | int | float | bool] = {
+            'scan_topic': '/succulence/scan',
+            'odom_topic': '/succulence/odom',
+            'map_topic': '/succulence/map/odom_only',
+            'map_publish_rate': 1.0,
 
-        self.declare_parameter('occupancy_grid.resolution')
-        self.declare_parameter('occupancy_grid.width')
-        self.declare_parameter('occupancy_grid.height')
-        self.declare_parameter('occupancy_grid.origin_x')
-        self.declare_parameter('occupancy_grid.origin_y')
-        self.declare_parameter('occupancy_grid.log_odds_occupied')
-        self.declare_parameter('occupancy_grid.log_odds_free')
-        self.declare_parameter('occupancy_grid.log_odds_max')
-        self.declare_parameter('occupancy_grid.log_odds_min')
-        self.declare_parameter('occupancy_grid.max_range')
-        self.declare_parameter('occupancy_grid.min_range')
+            'occupancy_grid.resolution': 0.05,
+            'occupancy_grid.width': 400,        # Note: int
+            'occupancy_grid.height': 400,       # Note: int
+            'occupancy_grid.origin_x': -10.0,
+            'occupancy_grid.origin_y': -10.0,
+            'occupancy_grid.log_odds_occupied': 0.7,
+            'occupancy_grid.log_odds_free': 0.3,
+            'occupancy_grid.log_odds_max': 100.0,
+            'occupancy_grid.log_odds_min': -100.0,
+            'occupancy_grid.max_range': 3.5,
+            'occupancy_grid.min_range': 0.1,
 
-        self.declare_parameter('lidar.x_offset')
-        self.declare_parameter('lidar.y_offset')
-        self.declare_parameter('lidar.yaw_offset')
+            'lidar.x_offset': 0.0,
+            'lidar.y_offset': 0.0,
+            'lidar.yaw_offset': 0.0,
+        }
+
+        # --- Declare all parameters (with default) ---
+        for name, default_val in param_defaults.items():
+            self.declare_parameter(name, default_val)
+
+        # tiny helper to fetch values safely and silence 'pylance'
+        def get_p(name: str):
+            val = self.get_parameter(name).value
+            return val if val is not None else param_defaults[name]
 
         # --- Read parameters ---
-        scan_topic = self.get_parameter('scan_topic').value
-        odom_topic = self.get_parameter('odom_topic').value
-        map_topic = self.get_parameter('map_topic').value
-        publish_rate = self.get_parameter('map_publish_rate').value
+        scan_topic : str        = str(get_p('scan_topic'))
+        odom_topic : str        = str(get_p('odom_topic'))
+        map_topic : str         = str(get_p('map_topic'))
+        publish_rate : float    = float(get_p('map_publish_rate'))
 
         # --- Create occupancy grid ---
         self.occupancy_grid = OccupancyGrid(
-            resolution=self.get_parameter('occupancy_grid.resolution').value,
-            width=self.get_parameter('occupancy_grid.width').value,
-            height=self.get_parameter('occupancy_grid.height').value,
-            origin_x=self.get_parameter('occupancy_grid.origin_x').value,
-            origin_y=self.get_parameter('occupancy_grid.origin_y').value,
-            log_odds_occupied=self.get_parameter('occupancy_grid.log_odds_occupied').value,
-            log_odds_free=self.get_parameter('occupancy_grid.log_odds_free').value,
-            log_odds_max=self.get_parameter('occupancy_grid.log_odds_max').value,
-            log_odds_min=self.get_parameter('occupancy_grid.log_odds_min').value,
-            max_range=self.get_parameter('occupancy_grid.max_range').value,
-            min_range=self.get_parameter('occupancy_grid.min_range').value,
-            lidar_x_offset=self.get_parameter('lidar.x_offset').value,
-            lidar_y_offset=self.get_parameter('lidar.y_offset').value,
-            lidar_yaw_offset=self.get_parameter('lidar.yaw_offset').value,
+            resolution=float(get_p('occupancy_grid.resolution')),
+            width=int(get_p('occupancy_grid.width')),
+            height=int(get_p('occupancy_grid.height')),
+            origin_x=float(get_p('occupancy_grid.origin_x')),
+            origin_y=float(get_p('occupancy_grid.origin_y')),
+            log_odds_occupied=float(get_p('occupancy_grid.log_odds_occupied')),
+            log_odds_free=float(get_p('occupancy_grid.log_odds_free')),
+            log_odds_max=float(get_p('occupancy_grid.log_odds_max')),
+            log_odds_min=float(get_p('occupancy_grid.log_odds_min')),
+            max_range=float(get_p('occupancy_grid.max_range')),
+            min_range=float(get_p('occupancy_grid.min_range')),
+            lidar_x_offset=float(get_p('lidar.x_offset')),
+            lidar_y_offset=float(get_p('lidar.y_offset')),
+            lidar_yaw_offset=float(get_p('lidar.yaw_offset')),
         )
 
         # --- State ---
-        self.current_pose = None
-        self.scan_count = 0
-        self.last_scan_time = 0.0
-        self.scan_rate_limit = 5.0  # Max scans processed per second
+        self.current_pose       = None
+        self.scan_count         = 0
+        self.last_scan_time     = 0.0
+        self.scan_rate_limit    = 5.0  # Max scans processed per second
 
         # --- Publishers / Subscribers ---
         self.map_pub = self.create_publisher(OccupancyGridMsg, map_topic, 10)

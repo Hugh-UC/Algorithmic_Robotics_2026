@@ -28,12 +28,12 @@ In RViz2 (Fixed Frame: "map"), useful displays:
   - Path       -> /succulence/plan          (A* plan to Kevin)
   - Odometry   -> /succulence/slam/odometry
 """
-
 import os
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, GroupAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, GroupAction, EmitEvent, LogInfo
 from launch.conditions import IfCondition
+from launch.events import Shutdown
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration, EqualsSubstitution, PythonExpression
 
@@ -89,22 +89,52 @@ def generate_launch_description():
         output='screen',
     )
 
+    # define navigator
+    nav_node = Node(
+        package='succulence_rover_ros',
+        executable='navigator_node',
+        name='navigator_node',
+        output='screen',
+        parameters=[params_file],
+    )
+
+    # event handler: watches nav_node, prints success, and kills ROS 2.
+    kill_event = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=nav_node,
+            on_exit=[
+                LogInfo(msg="Shutting down mission..."),
+                EmitEvent(event=Shutdown())
+            ]
+        )
+    )
+
     # Core Nodes
     stack_nodes = [
+        # --- arguements updated for required jazzy 'flags' (remove warning logs) ---
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
             name='map_to_odom_publisher',
-            arguments=['0', '0', '0', '0', '0', '0', '1', map_frame, odom_frame],
+            arguments=[
+                '--x', '0', '--y', '0', '--z', '0', 
+                '--roll', '0', '--pitch', '0', '--yaw', '0', 
+                '--frame-id', map_frame, '--child-frame-id', odom_frame
+            ],
             output='screen',
+            condition=IfCondition(is_sim)
         ),
-
-        # Lidar static TF is ONLY for Simulation
+        
+        # --- arguements updated for required jazzy 'flags' (remove warning logs) ---
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
             name='base_to_lidar_publisher',
-            arguments=['0', '0', '0', '0', '0', '0', '1', base_link_frame, lidar_frame],
+            arguments=[
+                '--x', '0', '--y', '0', '--z', '0', 
+                '--roll', '0', '--pitch', '0', '--yaw', '0', 
+                '--frame-id', base_link_frame, '--child-frame-id', lidar_frame
+            ],
             output='screen',
             condition=IfCondition(is_sim)
         ),
@@ -128,13 +158,9 @@ def generate_launch_description():
             ],
         ),
 
-        Node(
-            package='succulence_rover_ros',
-            executable='navigator_node',
-            name='navigator_node',
-            output='screen',
-            parameters=[params_file],
-        ),
+        nav_node,
+
+        kill_event,
     ]
 
     # sim launch (immediate)

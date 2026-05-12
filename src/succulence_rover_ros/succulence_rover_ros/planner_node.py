@@ -1,17 +1,25 @@
 """
-A* Planner ROS2 Node
+Planner ROS2 Node (Implements A*)
 
 Subscribes to the SLAM occupancy grid and the SLAM odometry. On a timer,
 runs A* from the robot's current cell to the hardcoded goal cell and
 publishes a nav_msgs/Path in the map frame.
+
+Usage: The planner node is launched as part of the mission.launch.py file,
+        which starts the whole SLAM + planning + navigation stack together.
+        The planner can be configured via ROS parameters, which are set in
+        the params_sim.yaml and params_physical.yaml files and loaded by the
+        launch file.
 """
 
 import numpy as np
 import rclpy
-from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid as OccupancyGridMsg, Odometry, Path
+from rclpy.node import Node, Publisher
+from nav_msgs.msg import OccupancyGrid as OccupancyGridMsg, Odometry, Path, MapMetaData
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseStamped, Quaternion
+from rcl_interfaces.msg import ParameterDescriptor
+from scipy import ndimage
 from scipy.spatial.transform import Rotation
 
 from .astar import astar_search, inflate_obstacles
@@ -26,89 +34,118 @@ class PlannerNode(Node):
         """
         super().__init__('planner_node')
 
-        self.declare_parameter('map_topic')
-        self.declare_parameter('odom_topic')
-        self.declare_parameter('plan_topic')
-        self.declare_parameter('frames.map_frame')
-        self.declare_parameter('costmap_topic', '/succulence/costmap')
-        self.declare_parameter('scan_topic', '/succulence/scan')
+        # all required parameter keys (with default fallbacks)
+        param_defaults : dict[str, str | int | float | bool] = {
+            # Topics/Frames
+            'map_topic': '/succulence/map',
+            'odom_topic': '/succulence/slam/odometry',
+            'plan_topic': '/succulence/plan',
+            'frames.map_frame': 'map',
+            'costmap_topic': '/succulence/costmap',
+            'scan_topic': '/succulence/scan',
+
+            # Planning
+            'planning.replan_period': 1.0,
+            'planning.heuristic_weight': 1.2,
+            'planning.data_weight': 0.1,
+            'planning.smooth_weight': 0.5,
+            'planning.goal_smooth_distance': 2.0,
+            'planning.smooth_tolerance': 0.01,
+
+            # Costmaps
+            'costmaps.mode': 'both',
+            'costmaps.occupancy_threshold': 50,
+            'costmaps.treat_unknown_as_obstacle': False,
+
+            'costmaps.global.inflation_radius_cells': 12.0,
+            'costmaps.global.inflation_weight': 50.0,
+
+            'costmaps.local.inflation_radius_cells': 15.0,
+            'costmaps.local.inflation_weight': 15.0,
+            'costmaps.local.max_obstacle_range': 3.0,
+            'costmaps.local.min_obstacle_range': 0.1,
+            
+            # Sensors
+            'lidar.x_offset': 0.0,
+            'lidar.y_offset': 0.0,
+            'lidar.yaw_offset': 0.0,
+
+            # Goal
+            'goal.x': 0.0,
+            'goal.y': 0.0,
+            'goal.tolerance': 0.05
+        }
+        
+        # declare all parameters, with default
+        for name, default_val in param_defaults.items():
+            self.declare_parameter(name, default_val)
+
+        # tiny helper to fetch values safely and silence 'pylance'
+        def get_p(name: str):
+            val = self.get_parameter(name).value
+            return val if val is not None else param_defaults[name]
+
+        # Topics/Frames
+        map_topic : str     = str(get_p('map_topic'))
+        odom_topic : str    = str(get_p('odom_topic'))
+        plan_topic : str    = str(get_p('plan_topic'))
+        costmap_topic : str = str(get_p('costmap_topic'))
+        scan_topic : str    = str(get_p('scan_topic'))
 
         # Planning
-        self.declare_parameter('planning.replan_period')
-        self.declare_parameter('planning.heuristic_weight', 1.2)
-        self.declare_parameter('planning.data_weight', 0.1)
-        self.declare_parameter('planning.smooth_weight', 0.5)
-        self.declare_parameter('planning.goal_smooth_distance', 2.0)
-        self.declare_parameter('planning.smooth_tolerance', 0.01)
+        self.map_frame : str        = str(get_p('frames.map_frame'))
+        self.replan_period : float  = float(get_p('planning.replan_period'))
+        self.epsilon : float        = float(get_p('planning.heuristic_weight'))
+        self.data_weight : float    = float(get_p('planning.data_weight'))
+        self.smooth_weight : float  = float(get_p('planning.smooth_weight'))
+        self.smooth_dist : float    = float(get_p('planning.goal_smooth_distance'))
+        self.smooth_tol : float     = float(get_p('planning.smooth_tolerance'))
 
         # Costmaps
-        self.declare_parameter('costmaps.mode', 'both')
-        self.declare_parameter('costmaps.occupancy_threshold')
-        self.declare_parameter('costmaps.treat_unknown_as_obstacle')
+        self.costmap_mode : str         = str(get_p('costmaps.mode')).lower()
+        self.occ_threshold : int        = int(get_p('costmaps.occupancy_threshold'))
+        self.unknown_as_obstacle : bool = bool(get_p('costmaps.treat_unknown_as_obstacle'))
 
-        self.declare_parameter('costmaps.global.inflation_radius_cells')
-        self.declare_parameter('costmaps.global.inflation_weight', 50.0)
-
-        self.declare_parameter('costmaps.local.inflation_radius_cells')
-        self.declare_parameter('costmaps.local.inflation_weight', 15.0)
-        self.declare_parameter('costmaps.local.max_obstacle_range', 3.0)
-        self.declare_parameter('costmaps.local.min_obstacle_range', 0.1)
-
-        self.declare_parameter('lidar.x_offset', 0.0)
-        self.declare_parameter('lidar.y_offset', 0.0)
-        self.declare_parameter('lidar.yaw_offset', 0.0)
-
-        self.declare_parameter('goal.x')
-        self.declare_parameter('goal.y')
-        self.declare_parameter('goal.tolerance', 0.05)
-
-        map_topic = self.get_parameter('map_topic').value
-        odom_topic = self.get_parameter('odom_topic').value
-        plan_topic = self.get_parameter('plan_topic').value
-        costmap_topic = self.get_parameter('costmap_topic').value
-        scan_topic = self.get_parameter('scan_topic').value
-
-        self.map_frame = self.get_parameter('frames.map_frame').value
-        self.replan_period = self.get_parameter('planning.replan_period').value
+        self.global_inf_radius : float  = float(get_p('costmaps.global.inflation_radius_cells'))
+        self.global_inf_weight : float  = float(get_p('costmaps.global.inflation_weight'))
         
-        # Save costmap settings
-        self.costmap_mode = self.get_parameter('costmaps.mode').value.lower()
-        self.occ_threshold = int(self.get_parameter('costmaps.occupancy_threshold').value)
-        self.unknown_as_obstacle = bool(self.get_parameter('costmaps.treat_unknown_as_obstacle').value)
+        self.local_inf_radius : float   = float(get_p('costmaps.local.inflation_radius_cells'))
+        self.local_inf_weight : float   = float(get_p('costmaps.local.inflation_weight'))
+        self.local_max_range : float    = float(get_p('costmaps.local.max_obstacle_range'))
+        self.local_min_range : float    = float(get_p('costmaps.local.min_obstacle_range'))
+
+        # Sensors
+        self.lidar_x_offset : float     = float(get_p('lidar.x_offset'))
+        self.lidar_y_offset : float     = float(get_p('lidar.y_offset'))
+        self.lidar_yaw_offset : float   = float(get_p('lidar.yaw_offset'))
+
+        # Goal
+        self.goal_x : float         = float(get_p('goal.x'))
+        self.goal_y : float         = float(get_p('goal.y'))
+        self.goal_tolerance : float = float(get_p('goal.tolerance'))
+
+        # internal state
+        self.global_costmap:  np.ndarray | None     = None
+        self.global_map_info : MapMetaData | None   = None
+        self.latest_scan : LaserScan | None         = None
         
-        self.global_inf_radius = float(self.get_parameter('costmaps.global.inflation_radius_cells').value)
-        self.global_inf_weight = float(self.get_parameter('costmaps.global.inflation_weight').value)
-        
-        self.local_inf_radius = float(self.get_parameter('costmaps.local.inflation_radius_cells').value)
-        self.local_inf_weight = float(self.get_parameter('costmaps.local.inflation_weight').value)
-        self.local_max_range = float(self.get_parameter('costmaps.local.max_obstacle_range').value)
-        self.local_min_range = float(self.get_parameter('costmaps.local.min_obstacle_range').value)
+        self.robot_xy : tuple[float, float] | None  = None
+        self.robot_theta : float                    = 0.0
+        self.consecutive_failures : int             = 0
 
-        self.lidar_x_offset = float(self.get_parameter('lidar.x_offset').value)
-        self.lidar_y_offset = float(self.get_parameter('lidar.y_offset').value)
-        self.lidar_yaw_offset = float(self.get_parameter('lidar.yaw_offset').value)
-
-        self.goal_x = float(self.get_parameter('goal.x').value)
-        self.goal_y = float(self.get_parameter('goal.y').value)
-        self.goal_tolerance = float(self.get_parameter('goal.tolerance').value)
-
-        self.global_costmap: np.ndarray | None = None
-        self.global_map_info = None
-        self.latest_scan: LaserScan | None = None
-        
-        self.robot_xy: tuple[float, float] | None = None
-        self.robot_theta = 0.0
-        self.consecutive_failures = 0
-
-        self.path_pub = self.create_publisher(Path, plan_topic, 10)
-        self.costmap_pub = self.create_publisher(OccupancyGridMsg, costmap_topic, 10)
+        # ROS2 publishers and subscribers
+        self.path_pub : Publisher       = self.create_publisher(Path, plan_topic, 10)
+        self.costmap_pub : Publisher    = self.create_publisher(OccupancyGridMsg, costmap_topic, 10)
+        self.reachable_pub : Publisher  = self.create_publisher(OccupancyGridMsg, plan_topic + '/reachable', 10)
 
         self.create_subscription(OccupancyGridMsg, map_topic, self._map_cb, 10)
         self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
         self.create_subscription(LaserScan, scan_topic, self._scan_cb, 10)
         
+        # replan on a timer
         self.create_timer(self.replan_period, self._replan)
 
+        # log initialisation info
         self.get_logger().info(
             f'PlannerNode started — map: {map_topic}, odom: {odom_topic}, '
             f'goal: ({self.goal_x:.2f}, {self.goal_y:.2f})')
@@ -154,7 +191,7 @@ class PlannerNode(Node):
         q = msg.pose.pose.orientation
         self.robot_theta = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_euler('xyz')[2]
 
-    def _world_to_cell(self, x: float, y: float, info) -> tuple[int, int]:
+    def _world_to_cell(self, x: float, y: float, info: MapMetaData) -> tuple[int, int]:
         """
         Converts world coordinates (meters) to grid cell indices.
 
@@ -170,7 +207,7 @@ class PlannerNode(Node):
         row = int((y - info.origin.position.y) / info.resolution)
         return row, col
 
-    def _cell_to_world(self, row: int, col: int, info) -> tuple[float, float]:
+    def _cell_to_world(self, row: int, col: int, info: MapMetaData) -> tuple[float, float]:
         """
         Converts grid cell indices to world coordinates (meters).
 
@@ -218,10 +255,10 @@ class PlannerNode(Node):
         # ----------------------------------------------------
         # 1: Get latest Map, Odom, and Scan Data
         # ----------------------------------------------------
-        if self.global_costmap is None or self.robot_xy is None:
+        if self.global_costmap is None or self.robot_xy is None or self.global_map_info is None:
             return
 
-        info = self.global_map_info
+        info : MapMetaData = self.global_map_info
 
         if self.costmap_mode in ['both', 'global'] and self.global_costmap is not None:
             cost_map = self.global_costmap.copy()
@@ -304,11 +341,11 @@ class PlannerNode(Node):
         self._clear_inf_halo(cost_map, start, self.local_inf_radius)
         self._clear_inf_halo(cost_map, goal, self.local_inf_radius)
 
-        # get heuristic weight from parameters
-        epsilon : float | None = self.get_parameter('planning.heuristic_weight').value
+        # publish reachable cells for debugging
+        self._publish_reachable_debug(cost_map, start, info)
 
         # pass combined cost_map into A*
-        path_cells = astar_search(cost_map, start, goal, epsilon=epsilon)
+        path_cells = astar_search(cost_map, start, goal, epsilon=self.epsilon)
         
         if path_cells is None:
             self._log_failure('no path found')
@@ -324,15 +361,15 @@ class PlannerNode(Node):
         for (r, c) in path_cells:
             wx, wy = self._cell_to_world(r, c, info)
             world_path.append((wx, wy))
-            
-        # grab smoothing weights from params
-        data_w : float | None = self.get_parameter('planning.data_weight').value
-        smooth_w : float | None = self.get_parameter('planning.smooth_weight').value
-        smooth_dist : float | None = self.get_parameter('planning.goal_smooth_distance').value
-        smooth_tol : float | None = self.get_parameter('planning.smooth_tolerance').value
 
         # smooth the trajectory
-        smoothed_world_path = self._smooth_path(world_path, data_weight=data_w, smooth_weight=smooth_w, goal_smooth_dist=smooth_dist, tolerance=smooth_tol)
+        smoothed_world_path = self._smooth_path(
+            world_path,
+            data_weight=self.data_weight,
+            smooth_weight=self.smooth_weight,
+            goal_smooth_dist=self.smooth_dist,
+            tolerance=self.smooth_tol
+        )
 
         # ----------------------------------------------------
         # 5: Publish Smoothed Nav Path
@@ -345,17 +382,20 @@ class PlannerNode(Node):
         q = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
 
         # publish the smoothed points
+        poses_list : list[PoseStamped] = []
         for (wx, wy) in smoothed_world_path:
             ps = PoseStamped()
             ps.header.frame_id = self.map_frame
             ps.pose.position.x = wx
             ps.pose.position.y = wy
             ps.pose.orientation = q
-            path_msg.poses.append(ps)
+            poses_list.append(ps)
 
-        if path_msg.poses:
-            path_msg.poses[-1].pose.position.x = self.goal_x
-            path_msg.poses[-1].pose.position.y = self.goal_y
+        if len(poses_list) > 0:
+            poses_list[-1].pose.position.x = self.goal_x
+            poses_list[-1].pose.position.y = self.goal_y
+
+        path_msg.poses = poses_list
 
         self.path_pub.publish(path_msg)
 
@@ -380,7 +420,39 @@ class PlannerNode(Node):
         costmap_msg.data = vis_grid.flatten().tolist()
         self.costmap_pub.publish(costmap_msg)
 
+    def _publish_reachable_debug(self, cost_map: np.ndarray, start: tuple[int, int], info):
+        """
+        Diagnoses 'No Path Found' errors by flood-filling the map to see exactly 
+        where the robot gets blocked.
+        """
+        h, w = cost_map.shape
+        start_row, start_col = start
 
+        if not (0 <= start_row < h and 0 <= start_col < w) or cost_map[start_row, start_col] == np.inf:
+            return
+
+        # Create a boolean mask of free space (True = free, False = solid wall)
+        free_space = cost_map != np.inf
+        
+        # Label all connected components
+        process = ndimage.label(free_space, structure=np.ones((3, 3), dtype=bool))
+        labels = process[0]
+
+        
+        start_label = int(labels[start])
+        reachable = (labels == start_label) if start_label != 0 else np.zeros_like(free_space)
+
+        # Encode: 0 = reachable (light), 100 = solid wall (dark), 50 = unreachable/stranded (gray)
+        debug = np.full_like(cost_map, 50, dtype=np.int8)
+        debug[reachable] = 0
+        debug[~free_space] = 100
+
+        msg = OccupancyGridMsg()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.map_frame
+        msg.info = info
+        msg.data = debug.flatten().tolist()
+        self.reachable_pub.publish(msg)
 
     def _smooth_path(self, path: list[tuple[float, float]], data_weight: float, smooth_weight: float, goal_smooth_dist: float = 2.0, tolerance: float = 0.01):
         """

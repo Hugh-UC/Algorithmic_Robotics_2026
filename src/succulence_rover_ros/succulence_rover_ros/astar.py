@@ -5,8 +5,8 @@ A* Path Planner (no ROS dependencies)
 where True = blocked (obstacle or inflated obstacle) and False = free.
 
 References:
-  - Hart, Nilsson, Raphael (1968) — original A* paper
-  - Lecture 12: Path Planning
+    - Hart, Nilsson, Raphael (1968) — original A* paper
+    - Lecture 12: Path Planning
 """
 
 import heapq

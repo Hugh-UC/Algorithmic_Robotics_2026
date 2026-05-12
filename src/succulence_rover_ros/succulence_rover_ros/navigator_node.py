@@ -7,6 +7,7 @@ velocity when there is no plan, when the plan is stale, or when the robot
 has arrived at the goal.
 """
 
+import sys
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -23,28 +24,41 @@ class NavigatorNode(Node):
     def __init__(self):
         super().__init__('navigator_node')
 
-        self.declare_parameter('plan_topic')
-        self.declare_parameter('odom_topic')
-        self.declare_parameter('cmd_vel_topic')
-        self.declare_parameter('control.rate_hz')
-        self.declare_parameter('control.lookahead')
-        self.declare_parameter('control.max_linear_v')
-        self.declare_parameter('control.max_angular_v')
-        self.declare_parameter('control.goal_tolerance')
-        self.declare_parameter('control.plan_timeout')
+        # all required parameter keys (with default fallbacks)
+        param_defaults: dict[str, str | int | float | bool] = {
+            'plan_topic': '/succulence/plan',
+            'odom_topic': '/succulence/slam/odometry',
+            'cmd_vel_topic': '/cmd_vel',
+            'control.rate_hz': 20.0,
+            'control.lookahead': 0.3,
+            'control.max_linear_v': 0.2,
+            'control.max_angular_v': 1.0,
+            'control.goal_tolerance': 0.1,
+            'control.plan_timeout': 2.0
+        }
 
-        plan_topic = self.get_parameter('plan_topic').value
-        odom_topic = self.get_parameter('odom_topic').value
-        cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
+        # declare all parameters, with default
+        for name, default_val in param_defaults.items():
+            self.declare_parameter(name, default_val)
 
-        rate_hz = float(self.get_parameter('control.rate_hz').value)
-        self.plan_timeout = float(self.get_parameter('control.plan_timeout').value)
+        # tiny helper to fetch values safely and silence 'pylance'
+        def get_p(name: str):
+            val = self.get_parameter(name).value
+            return val if val is not None else param_defaults[name]
+        
+
+        plan_topic          = str(get_p('plan_topic'))
+        odom_topic          = str(get_p('odom_topic'))
+        cmd_vel_topic       = str(get_p('cmd_vel_topic'))
+
+        rate_hz             = float(get_p('control.rate_hz'))
+        self.plan_timeout   = float(get_p('control.plan_timeout'))
 
         self.follower = PurePursuit(
-            lookahead=float(self.get_parameter('control.lookahead').value),
-            max_linear_v=float(self.get_parameter('control.max_linear_v').value),
-            max_angular_v=float(self.get_parameter('control.max_angular_v').value),
-            goal_tolerance=float(self.get_parameter('control.goal_tolerance').value),
+            lookahead=float(get_p('control.lookahead')),
+            max_linear_v=float(get_p('control.max_linear_v')),
+            max_angular_v=float(get_p('control.max_angular_v')),
+            goal_tolerance=float(get_p('control.goal_tolerance')),
         )
 
         self.pose: np.ndarray | None = None
@@ -62,12 +76,24 @@ class NavigatorNode(Node):
             f'cmd_vel: {cmd_vel_topic}')
 
     def _plan_cb(self, msg: Path):
-        self.path = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
+        """
+        _summary_
+
+        Args:
+            msg (Path): _description_
+        """
+        self.path = [(float(p.pose.position.x), float(p.pose.position.y)) for p in msg.poses]
         self.last_plan_time = self.get_clock().now().nanoseconds / 1e9
         if self.path:
             self.arrived = False  # Fresh plan — resume driving.
 
     def _odom_cb(self, msg: Odometry):
+        """
+        _summary_
+
+        Args:
+            msg (Odometry): _description_
+        """
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         q = msg.pose.pose.orientation
@@ -75,6 +101,9 @@ class NavigatorNode(Node):
         self.pose = np.array([x, y, theta])
 
     def _tick(self):
+        """
+        _summary_
+        """
         if self.pose is None:
             self._publish_stop()
             return
@@ -89,8 +118,17 @@ class NavigatorNode(Node):
         v, w, arrived = self.follower.compute_cmd(self.pose, self.path)
         if arrived and not self.arrived:
             self.arrived = True
-            self.get_logger().info('Arrived at goal — stopping.')
             self._publish_stop()
+
+            # extract final goal coordinate from A* path
+            if self.path and len(self.path) > 0:
+                goal_x, goal_y = self.path[-1]
+            else:
+                goal_x, goal_y = self.pose[0], self.pose[1] # fallback
+
+            self.get_logger().info(f'Goal Completed | Success | Arrived at ({goal_x:.2f}, {goal_y:.2f})')
+            self.get_logger().info('✅ TurtleBot Goal Complete! Successfully arrived at goal!')
+            sys.exit(0)
             return
 
         twist = Twist()
@@ -99,6 +137,9 @@ class NavigatorNode(Node):
         self.cmd_pub.publish(twist)
 
     def _publish_stop(self):
+        """
+        _summary_
+        """
         self.cmd_pub.publish(Twist())
 
 

@@ -1,5 +1,9 @@
 """
-Correlation-Based Scan Matching (Week 6)
+Correlation-Based Scan Matching
+
+The scan matcher is used in the SLAM node to provide relative pose 
+estimates between consecutive laser scans (scan-to-scan) and the current
+laser scan against the map (scan-to-map).
 
 This module aligns consecutive laser scans by searching over candidate
 relative poses and scoring each one using grid correlation. It returns
@@ -11,15 +15,12 @@ simplified for teaching. It's brute-force (O(n^3) over the search space)
 — not elegant, but simple, reliable, and guaranteed to find the global
 optimum within the search window.
 
-Student tasks:
-  - Implement _build_local_grid()               — rasterise scan into grid
-  - Implement _score_alignment()                 — correlation scoring
-  - Implement match()                            — brute-force grid search
-  - Implement _estimate_covariance_from_hessian() — uncertainty from curvature
+Extension: A course-to-fine search strategy is implemented to speed up
+        the search while maintaining good accuracy.
 
-References:
-  - Olson, "Real-Time Correlative Scan Matching" (2009)
-  - Lecture 06: Scan Matching
+Usage: The ScanMatcher class is instantiated in the SLAM node and called
+        with new laser scans to get relative pose estimates for the SLAM
+        factor graph.
 """
 
 import numpy as np

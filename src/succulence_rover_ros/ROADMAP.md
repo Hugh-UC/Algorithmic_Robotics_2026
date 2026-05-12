@@ -22,11 +22,36 @@
 
 ## 🚀 Future Enhancements
 
-### 1. Dynamic Obstacle Tracking (Velocity Prediction)
+### Dynamic Obstacle Tracking (Velocity Prediction)
 Currently, our Local Costmap treats Kevin as a static wall every time it refreshes. If we implement a basic Kalman Filter to track moving clusters in the laser scan, we could project Kevin's velocity vector and add a "forward penalty" to the costmap, allowing the robot to route *behind* him instead of just stopping in front of him.
 
-### 2. Adaptive Pure Pursuit Lookahead
+### Adaptive Pure Pursuit Lookahead
 Currently, `control.lookahead` is a fixed distance. We could map the lookahead distance dynamically to the robot's current linear velocity ($v$). At high speeds, the robot looks further ahead for smooth, sweeping turns. As it slows down for tight corridors, the lookahead dynamically shrinks to ensure strict path adherence.
 
-### 3. Frontier Exploration (Auto-Mapping)
+### rontier Exploration (Auto-Mapping)
 Instead of relying on a hardcoded coordinate to drive to, we could write an exploration node that analyzes the SLAM occupancy grid, identifies "Frontiers" (the boundary between known free space and unknown space), and continuously publishes the nearest frontier as the new A* goal until the entire lab is mapped.
+
+### Move Global Parameters into Global Definition
+**For Example:**
+```yaml
+/**:
+  ros__parameters:
+    goal:             # Acts like a global variable for all nodes
+      x: 0.45
+      y: 2.35
+      tolerance: 0.05
+```
+**OR**
+```yaml
+/**:
+  ros__parameters:
+    occupancy_grid:
+      resolution: 0.025
+      width: 300
+      height: 300
+```
+
+Essentially, any param that will always be the same between files (nodes), should be declared like this.
+I.e. if the both nodes depend on a same definition (e.g. 'occupancy_grid.resolution') and the code requires
+these deifintions to be the same (or atleast highly preferable) they should be made into global parameters,
+to reduce declaration redundancies and making parameter tweeking simpler.

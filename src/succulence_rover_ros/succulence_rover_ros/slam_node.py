@@ -1,5 +1,31 @@
 """
-Pose Graph SLAM Node (Week 7) — SOLUTION
+Pose Graph SLAM Node
+
+This node implements pose graph SLAM using odometry and laser scans. It
+builds a pose graph where each node is a keyframe (a robot pose at which
+a laser scan was taken) and edges represent relative pose constraints
+from odometry and scan matching. The graph is optimised periodically to
+produce a globally consistent map and trajectory estimate.
+The node also builds an occupancy grid map from the laser scans and
+publishes it for use by the planner and visualisation.
+
+Key features:
+- Keyframe selection based on translation and rotation thresholds
+- Scan matching for relative pose estimation between keyframes
+- Pose graph optimisation using non-linear least squares
+- Map rebuilding after optimisation to correct for drift and ghost walls
+- Configurable parameters for tuning SLAM performance and accuracy
+
+Usage: The SlamNode is instantiated in the mission launch file and runs
+        as part of the overall SLAM + A* + Navigator system. It
+        subscribes to odometry and laser scans, and publishes the
+        occupancy grid map, SLAM-corrected odometry, and the SLAM path
+        for visualisation in RViz.
+
+References:
+    - Dellaert, "Factor Graphs and GTSAM" (2012) — factor graph formulation of SLAM
+    - Olson, "Real-Time Correlative Scan Matching" (2009) — scan matching algorithm
+    - Thrun, Burgard, Fox, "Probabilistic Robotics" (2005), Chapters 5-9 — occupancy grid mapping, motion models, SLAM
 """
 
 import numpy as np
@@ -27,107 +53,116 @@ class SlamNode(Node):
     def __init__(self):
         super().__init__('slam_node')
 
-        self.declare_parameter('scan_topic')
-        self.declare_parameter('odom_topic')
-        self.declare_parameter('map_topic')
-        self.declare_parameter('slam_odometry_topic')
-        self.declare_parameter('slam_path_topic')
+        param_defaults: dict[str, str | int | float | bool] = {
+            'scan_topic': '/succulence/scan',
+            'odom_topic': '/succulence/odom',
+            'map_topic': '/succulence/map',
+            'slam_odometry_topic': '/succulence/slam/odometry',
+            'slam_path_topic': '/succulence/slam/path',
 
-        self.declare_parameter('slam.keyframe_distance')
-        self.declare_parameter('slam.keyframe_angle')
-        self.declare_parameter('slam.optimization_interval')
-        self.declare_parameter('slam.num_iterations')
-        self.declare_parameter('slam.map_publish_interval')
-        self.declare_parameter('slam.scan_match_cov_xy')
-        self.declare_parameter('slam.scan_match_cov_theta')
-        # --- Group 001: Map-Scan Weighting ---
-        self.declare_parameter('slam.map_match_weight', 0.3)        # 30% map, 70% scan
-        self.declare_parameter('slam.scan_rate_limit', 10.0)        # Hz, slam scan limit
-        # -------------------------------------
+            'slam.keyframe_distance': 0.1,
+            'slam.keyframe_angle': 0.1,
+            'slam.optimization_interval': 5,
+            'slam.num_iterations': 10,
+            'slam.map_publish_interval': 1.0,
+            'slam.scan_match_cov_xy': 0.01,
+            'slam.scan_match_cov_theta': 0.01,
+            # Map-Scan Weighting
+            'slam.map_match_weight': 0.3,               # 30% map, 70% scan
+            'slam.scan_rate_limit': 10.0,               # Hz, slam scan limit
 
-        self.declare_parameter('scan_matcher.search_x')
-        self.declare_parameter('scan_matcher.search_y')
-        self.declare_parameter('scan_matcher.search_theta')
-        self.declare_parameter('scan_matcher.resolution_x')
-        self.declare_parameter('scan_matcher.resolution_y')
-        self.declare_parameter('scan_matcher.resolution_theta')
-        self.declare_parameter('scan_matcher.min_score')
-        self.declare_parameter('scan_matcher.local_grid_size')
-        self.declare_parameter('scan_matcher.local_grid_resolution')
+            'scan_matcher.search_x': 0.2,
+            'scan_matcher.search_y': 0.2,
+            'scan_matcher.search_theta': 0.2,
+            'scan_matcher.resolution_x': 0.025,
+            'scan_matcher.resolution_y': 0.025,
+            'scan_matcher.resolution_theta': 0.025,
+            'scan_matcher.min_score': 0.45,
+            'scan_matcher.local_grid_size': 1000,       # 25m x 25m at 0.025 res
+            'scan_matcher.local_grid_resolution': 0.025,
 
-        self.declare_parameter('occupancy_grid.resolution')
-        self.declare_parameter('occupancy_grid.width')
-        self.declare_parameter('occupancy_grid.height')
-        self.declare_parameter('occupancy_grid.origin_x')
-        self.declare_parameter('occupancy_grid.origin_y')
-        self.declare_parameter('occupancy_grid.log_odds_occupied')
-        self.declare_parameter('occupancy_grid.log_odds_free')
-        self.declare_parameter('occupancy_grid.log_odds_max')
-        self.declare_parameter('occupancy_grid.log_odds_min')
-        self.declare_parameter('occupancy_grid.max_range')
-        self.declare_parameter('occupancy_grid.min_range')
+            'occupancy_grid.resolution': 0.025,
+            'occupancy_grid.width': 200,
+            'occupancy_grid.height': 200,
+            'occupancy_grid.origin_x': -20.0,
+            'occupancy_grid.origin_y': -20.0,
+            'occupancy_grid.log_odds_occupied': 0.7,
+            'occupancy_grid.log_odds_free': 0.4,
+            'occupancy_grid.log_odds_max': 100.0,
+            'occupancy_grid.log_odds_min': -100.0,
+            'occupancy_grid.max_range': 3.5,
+            'occupancy_grid.min_range': 0.1,
 
-        self.declare_parameter('motion_model.alpha1')
-        self.declare_parameter('motion_model.alpha2')
-        self.declare_parameter('motion_model.alpha3')
-        self.declare_parameter('motion_model.alpha4')
+            'motion_model.alpha1': 0.1,
+            'motion_model.alpha2': 0.1,
+            'motion_model.alpha3': 0.1,
+            'motion_model.alpha4': 0.1,
 
-        self.declare_parameter('lidar.x_offset')
-        self.declare_parameter('lidar.y_offset')
-        self.declare_parameter('lidar.yaw_offset')
+            'lidar.x_offset': 0.0,
+            'lidar.y_offset': 0.0,
+            'lidar.yaw_offset': 0.0
+        }
 
-        scan_topic = self.get_parameter('scan_topic').value
-        odom_topic = self.get_parameter('odom_topic').value
-        map_topic = self.get_parameter('map_topic').value
-        slam_odom_topic = self.get_parameter('slam_odometry_topic').value
-        slam_path_topic = self.get_parameter('slam_path_topic').value
+        # declare all parameters, with default
+        for name, default_val in param_defaults.items():
+            self.declare_parameter(name, default_val)
 
-        self.keyframe_distance = self.get_parameter('slam.keyframe_distance').value
-        self.keyframe_angle = self.get_parameter('slam.keyframe_angle').value
-        self.optimization_interval = self.get_parameter('slam.optimization_interval').value
-        self.num_iterations = self.get_parameter('slam.num_iterations').value
-        map_publish_interval = self.get_parameter('slam.map_publish_interval').value
-        self.scan_match_cov_xy = self.get_parameter('slam.scan_match_cov_xy').value
-        self.scan_match_cov_theta = self.get_parameter('slam.scan_match_cov_theta').value
-        # --- Group 001: Map-Scan Weighting ---
-        self.map_match_weight = self.get_parameter('slam.map_match_weight').value
-        self.scan_rate_limit = self.get_parameter('slam.scan_rate_limit').value
-        # -------------------------------------
+        # tiny helper to fetch values safely and silence 'pylance'
+        def get_p(name: str):
+            val = self.get_parameter(name).value
+            return val if val is not None else param_defaults[name]
 
-        self.alpha1 = self.get_parameter('motion_model.alpha1').value
-        self.alpha2 = self.get_parameter('motion_model.alpha2').value
-        self.alpha3 = self.get_parameter('motion_model.alpha3').value
-        self.alpha4 = self.get_parameter('motion_model.alpha4').value
+        scan_topic : str        = str(get_p('scan_topic'))
+        odom_topic : str        = str(get_p('odom_topic'))
+        map_topic : str         = str(get_p('map_topic'))
+        slam_odom_topic : str   = str(get_p('slam_odometry_topic'))
+        slam_path_topic : str   = str(get_p('slam_path_topic'))
 
-        self.lidar_yaw_offset = self.get_parameter('lidar.yaw_offset').value
+        self.keyframe_distance      = float(get_p('slam.keyframe_distance'))
+        self.keyframe_angle         = float(get_p('slam.keyframe_angle'))
+        self.optimization_interval  = int(get_p('slam.optimization_interval'))
+        self.num_iterations         = int(get_p('slam.num_iterations'))
+        map_publish_interval        = float(get_p('slam.map_publish_interval'))
+        self.scan_match_cov_xy      = float(get_p('slam.scan_match_cov_xy'))
+        self.scan_match_cov_theta   = float(get_p('slam.scan_match_cov_theta'))
+        # Map-Scan Weighting
+        self.map_match_weight       = float(get_p('slam.map_match_weight'))
+        self.scan_rate_limit        = float(get_p('slam.scan_rate_limit'))
+
+        self.alpha1 = float(get_p('motion_model.alpha1'))
+        self.alpha2 = float(get_p('motion_model.alpha2'))
+        self.alpha3 = float(get_p('motion_model.alpha3'))
+        self.alpha4 = float(get_p('motion_model.alpha4'))
+
+        self.lidar_yaw_offset = float(get_p('lidar.yaw_offset'))
 
         self.scan_matcher = ScanMatcher(
-            search_x=self.get_parameter('scan_matcher.search_x').value,
-            search_y=self.get_parameter('scan_matcher.search_y').value,
-            search_theta=self.get_parameter('scan_matcher.search_theta').value,
-            resolution_x=self.get_parameter('scan_matcher.resolution_x').value,
-            resolution_y=self.get_parameter('scan_matcher.resolution_y').value,
-            resolution_theta=self.get_parameter('scan_matcher.resolution_theta').value,
-            local_grid_size=self.get_parameter('scan_matcher.local_grid_size').value,
-            local_grid_resolution=self.get_parameter('scan_matcher.local_grid_resolution').value,
-            min_score=self.get_parameter('scan_matcher.min_score').value,
+            search_x=float(get_p('scan_matcher.search_x')),
+            search_y=float(get_p('scan_matcher.search_y')),
+            search_theta=float(get_p('scan_matcher.search_theta')),
+            resolution_x=float(get_p('scan_matcher.resolution_x')),
+            resolution_y=float(get_p('scan_matcher.resolution_y')),
+            resolution_theta=float(get_p('scan_matcher.resolution_theta')),
+            local_grid_size=int(get_p('scan_matcher.local_grid_size')),
+            local_grid_resolution=float(get_p('scan_matcher.local_grid_resolution')),
+            min_score=float(get_p('scan_matcher.min_score')),
         )
 
         self.occupancy_grid = OccupancyGrid(
-            resolution=self.get_parameter('occupancy_grid.resolution').value,
-            width=self.get_parameter('occupancy_grid.width').value,
-            height=self.get_parameter('occupancy_grid.height').value,
-            origin_x=self.get_parameter('occupancy_grid.origin_x').value,
-            origin_y=self.get_parameter('occupancy_grid.origin_y').value,
-            log_odds_occupied=self.get_parameter('occupancy_grid.log_odds_occupied').value,
-            log_odds_free=self.get_parameter('occupancy_grid.log_odds_free').value,
-            log_odds_max=self.get_parameter('occupancy_grid.log_odds_max').value,
-            log_odds_min=self.get_parameter('occupancy_grid.log_odds_min').value,
-            max_range=self.get_parameter('occupancy_grid.max_range').value,
-            min_range=self.get_parameter('occupancy_grid.min_range').value,
-            lidar_x_offset=self.get_parameter('lidar.x_offset').value,
-            lidar_y_offset=self.get_parameter('lidar.y_offset').value,
-            lidar_yaw_offset=self.get_parameter('lidar.yaw_offset').value,
+            resolution=float(get_p('occupancy_grid.resolution')),
+            width=int(get_p('occupancy_grid.width')),
+            height=int(get_p('occupancy_grid.height')),
+            origin_x=float(get_p('occupancy_grid.origin_x')),
+            origin_y=float(get_p('occupancy_grid.origin_y')),
+            log_odds_occupied=float(get_p('occupancy_grid.log_odds_occupied')),
+            log_odds_free=float(get_p('occupancy_grid.log_odds_free')),
+            log_odds_max=float(get_p('occupancy_grid.log_odds_max')),
+            log_odds_min=float(get_p('occupancy_grid.log_odds_min')),
+            max_range=float(get_p('occupancy_grid.max_range')),
+            min_range=float(get_p('occupancy_grid.min_range')),
+            lidar_x_offset=float(get_p('lidar.x_offset')),
+            lidar_y_offset=float(get_p('lidar.y_offset')),
+            lidar_yaw_offset=float(get_p('lidar.yaw_offset')),
         )
 
         self.pose_graph = PoseGraph()
@@ -336,7 +371,7 @@ class SlamNode(Node):
         return np.array([x, y, rotation.as_euler('xyz', degrees=False)[2]])
 
     def _yaw_to_quaternion(self, yaw: float) -> Quaternion:
-        q = Rotation.from_euler('z', yaw).as_quat()
+        q = Rotation.from_euler('z', yaw).as_quat(canonical=False)
         return Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
     def _3x3_to_6x6_covariance(self, cov_3x3: np.ndarray) -> list:
