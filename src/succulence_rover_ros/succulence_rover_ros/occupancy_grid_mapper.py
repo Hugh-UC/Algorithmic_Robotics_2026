@@ -118,7 +118,6 @@ class OccupancyGrid:
             - Cast to int (grid indices must be integers)
             - col corresponds to x, row corresponds to y
         """
-        # TODO: YOUR CODE HERE (2 lines)
         col = int((x - self.origin_x) / self.resolution)
         row = int((y - self.origin_y) / self.resolution)
         return row, col
@@ -242,8 +241,7 @@ class OccupancyGrid:
             # Compute beam angle in world frame (including lidar yaw offset)
             beam_angle = robot_theta + self.lidar_yaw_offset + (angle_min + i * angle_increment)
 
-            # TODO: Compute endpoint in world coordinates (2 lines)
-            # The beam travels distance r from (lidar_x, lidar_y) along beam_angle.
+            # Compute endpoint in world coordinates
             end_x = lidar_x + r * np.cos(beam_angle)
             end_y = lidar_y + r * np.sin(beam_angle)
 
