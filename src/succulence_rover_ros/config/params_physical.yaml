@@ -317,7 +317,7 @@ planner_node:
 
       heuristic_weight: 1.0       # 1.0 = Optimal (no change), >1.0 = Greedy/Fast
       data_weight: 0.4            # "Path Fidelity" (High = sticks to A* grid, Low = smooths out)
-      smooth_weight: 0.25         # "Rubber Band" (High = cuts corners tightly)
+      smooth_weight: 0.3          # "Rubber Band" (High = cuts corners tightly)         # **WORKING**: 0.25
       goal_smooth_distance: 2.0   # Distance from the goal (in cells) at which smoothing is relaxed to allow tighter turns.
       smooth_tolerance: 0.01      # Numerical stopping condition for the Gradient Descent algorithm inside _smooth_path function.
 
@@ -394,7 +394,7 @@ navigator_node:
       # arc to it.
       # Larger: gentle, sweeping turns; cuts corners.
       # Smaller: aggressive, tight tracking of the path; can oscillate.
-      lookahead: 0.2     # **WORKING** : 0.5
+      lookahead: 0.3      # **WORKING** : 0.5
 
       # Maximum forward speed in m/s.
       # Larger: faster mission completion but stresses scan matching and

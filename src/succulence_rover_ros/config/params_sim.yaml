@@ -312,7 +312,7 @@ planner_node:
       heuristic_weight: 1.2       # 1.0 = Optimal (no change), >1.0 = Greedy/Fast
       data_weight: 0.3            # "Path Fidelity" (High = sticks to A* grid, Low = smooths out)
       smooth_weight: 0.25         # "Rubber Band" (High = cuts corners tightly)
-      goal_smooth_distance: 2.0   # Distance from the goal (in cells) at which smoothing is relaxed to allow tighter turns.
+      goal_smooth_distance: 4.0   # Distance from the goal (in cells) at which smoothing is relaxed to allow tighter turns. (4.0 * 0.025 = 0.10m)
       smooth_tolerance: 0.01      # Numerical stopping condition for the Gradient Descent algorithm inside _smooth_path function.
 
     costmaps:
@@ -364,7 +364,7 @@ planner_node:
     goal:
       x: 50.0
       y: 3.0
-      tolerance: 0.1
+      tolerance: 0.3
 
 
 # ====================================================================
@@ -394,19 +394,19 @@ navigator_node:
       # Larger: faster mission completion but stresses scan matching and
       #   widens turning radius at the controller.
       # Smaller: slower but safer; better localisation and tighter turns.
-      max_linear_v: 0.3     # **OLD** : 0.25
+      max_linear_v: 0.4     # **OLD** : 0.25
 
       # Maximum angular speed in rad/s.
       # Larger: tighter turns possible at speed, harder on scan matching
       #   (rotation is the failure mode).
       # Smaller: rover spins more slowly; may struggle on sharp corners.
-      max_angular_v: 0.75
+      max_angular_v: 0.6
 
       # Distance to the goal at which the navigator declares arrival
       # and stops.
       # Larger: stops further from the exact goal; more forgiving.
       # Smaller: stops closer; may overshoot or miss in noisy odometry.
-      goal_tolerance: 0.1   # **OLD** : 0.05
+      goal_tolerance: 0.3   # **OLD** : 0.05
 
       # Seconds without a fresh plan before the navigator stops the rover
       # as a safety fallback. Must comfortably exceed `replan_period`.
