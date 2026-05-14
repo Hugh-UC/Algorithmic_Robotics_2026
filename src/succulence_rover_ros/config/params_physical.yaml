@@ -1,8 +1,11 @@
-# Succulence Rover — Algorithmic Robotics Lab Parameters
+# [PHYSICAL] Succulence Rover — Algorithmic Robotics Lab Parameters
 #
-# Default values are tuned for the Unity Mars simulation. Lines marked
-# `physical: ...` show the equivalent value for the TurtleBot — comment
-# the sim line and uncomment the physical line to switch.
+# This YAML file contains tunable parameters for the physical deployment of
+# the Succulence Rover. It is structured into sections corresponding to each
+# node in the ROS2 system. Each parameter includes comments explaining its
+# purpose and the effects. Adjust these values to optimize the rover's
+# performance in the real world, keeping in mind the trade-offs involved in
+# each setting.
 
 
 # ====================================================================
@@ -57,7 +60,7 @@ motion_model:
       # turning). Primary lever for heading uncertainty.
       # Larger: heading uncertainty grows quickly during turns.
       # Smaller: rover trusts its yaw more between observations.
-      alpha4: 0.2
+      alpha4: 0.3             # **WORKING**: 0.2
 
       # Maximum number of poses kept in the published Path message before
       # the oldest are dropped. Purely a visualisation cap.
@@ -76,7 +79,7 @@ occupancy_grid_mapper:
 
     # Pose source used to project scans into the world frame. The mapper
     # uses dead-reckoning here (no SLAM correction) — that is intentional,
-    # so students can see odom drift in the resulting map.
+    # so odom drift can be seen in the resulting map.
     odom_topic: "/succulence/dead_reckoning/odometry"
 
     # Output map topic for this node.
@@ -87,6 +90,12 @@ occupancy_grid_mapper:
     # Smaller: laggier visualisation, less load.
     map_publish_rate: 2.0
 
+    # Maximum rate at which incoming scans are processed
+    # Larger: more responsive to new data but higher CPU.
+    # Smaller: cheaper but the map and pose may lag behind the latest
+    #   scan data.
+    scan_rate_limit: 10.0           # Exceeding 10 is pointless as the Lidar does not return scans as fast
+
     occupancy_grid:
       # Cell size in metres. Drives every other grid dimension.
       # Larger: coarser map, less RAM, A* path is blockier.
@@ -96,15 +105,15 @@ occupancy_grid_mapper:
       # Grid size in cells. Total covered area = width * resolution metres.
       # Larger: covers more terrain, more memory.
       # Smaller: smaller world, may clip off-grid scans.
-      width: 300
-      height: 300
+      width: 300          # 7.5m at 2.5cm resolution
+      height: 300         # 7.5m at 2.5cm resolution
 
       # World coordinate of the grid's (0, 0) cell. Together with width /
       # height / resolution, defines which world region the grid covers.
       # Increase: grid window shifts in the +x / +y direction.
       # Decrease: grid window shifts in the opposite direction.
-      origin_x: 0.0
-      origin_y: 0.0
+      origin_x: -1.0              # *CHANGE* : matches SLAM origin
+      origin_y: -1.0              # *CHANGE* : matches SLAM origin
 
       # Log-odds increment added to a cell when a scan ray ends in it
       # (i.e. cell is observed occupied).
@@ -135,8 +144,8 @@ occupancy_grid_mapper:
       # max_range Smaller: only nearby returns trusted, smaller built map.
       # min_range Larger: ignores closer returns (filters body reflections).
       # min_range Smaller: includes closer returns (risks self-hits).
-      max_range: 3.0
-      min_range: 0.1
+      max_range: 7.5          # *CHANGE* : matches map grid size
+      min_range: 0.14
 
     # Offset for lidar frame relative to base_link
     lidar:
@@ -165,21 +174,21 @@ slam_node:
       #   that are more likely to saturate the search window.
       # Smaller: more keyframes -> denser graph, more CPU per optimisation
       #   pass, but tighter local constraints.
-      keyframe_distance: 0.1
+      keyframe_distance: 0.06         # update every 0.2 seconds (0.3 m/s × 0.2 s = 0.06 meters)        # **WORKING**: 0.1
 
       # Rotation between keyframes, in radians.
       # Larger: fewer keyframes during turns -> heading drift accumulates
       #   between corrections.
       # Smaller: keyframes during sharp turns -> better corrected heading,
       #   higher CPU.
-      keyframe_angle: 0.1
+      keyframe_angle: 0.05            # update every ~0.27s during a turn           # **WORKING**: 0.1
 
       # Run graph optimisation every N keyframes.
       # Larger: optimiser runs less often -> cheaper but the live map can
       #   show drift longer before snapping.
       # Smaller: optimiser runs more often -> tighter map but more CPU and
       #   more frequent visual snaps.
-      optimization_interval: 5
+      optimization_interval: 2        # **WORKING**: 5
 
       # Gauss-Newton iterations per optimisation call.
       # Larger: more thorough convergence per call, more CPU per snap.
@@ -190,7 +199,7 @@ slam_node:
       # Seconds between OccupancyGrid publishes from SLAM.
       # Larger: less RViz/CPU load, laggier map.
       # Smaller: snappier map, more bandwidth and rendering cost.
-      map_publish_interval: 0.5         # **WORKING**: 0.2
+      map_publish_interval: 0.3         # **WORKING**: 0.2
 
       # Floor on the diagonal of scan-match edge covariances. Prevents one
       # over-confident match from dominating the optimiser.
@@ -213,7 +222,7 @@ slam_node:
       # Larger: more responsive to new data but higher CPU.
       # Smaller: cheaper but the map and pose may lag behind the latest
       #   scan data.
-      scan_rate_limit: 20.0           # **WORKING**: 10.0
+      scan_rate_limit: 10.0           # Exceeding 10 is pointless as the Lidar does not return scans as fast
       # -------------------------------------
 
     # See occupancy_grid_mapper.lidar above for offsets.
@@ -228,7 +237,7 @@ slam_node:
       alpha1: 0.1
       alpha2: 0.05
       alpha3: 0.05
-      alpha4: 0.2
+      alpha4: 0.3         # **WORKING**: 0.2
 
     scan_matcher:
       # Half-width of the brute-force search window, per axis.
@@ -240,7 +249,7 @@ slam_node:
       #   and the matcher will silently saturate at the boundary.
       search_x: 0.5
       search_y: 0.5
-      search_theta: 0.1
+      search_theta: 0.3         # **WORKING**: 0.1
 
       # Step size when sweeping the search window.
       # Larger: fewer candidates -> faster but coarser localisation.
@@ -282,8 +291,8 @@ slam_node:
       log_odds_free: 0.4          # log-odds decrement for free cells. Larger = faster clearing, more noise.
       log_odds_max: 5.0           # saturation clamp for log-odds. Larger magnitude = more confidence, less adaptability.
       log_odds_min: -5.0          # saturation clamp for log-odds. Larger magnitude = more confidence, less adaptability.  
-      max_range: 3.0              # range gate on lidar returns used for mapping. Larger = more coverage, more noise. Smaller = less coverage, less noise.
-      min_range: 0.1              # range gate on lidar returns used for mapping. Larger = ignores closer returns. Smaller = includes closer returns (risks self-hits).
+      max_range: 7.5              # range gate on lidar returns used for mapping. Larger = more coverage, more noise. Smaller = less coverage, less noise.    # *CHANGE* : matches map grid size
+      min_range: 0.14             # range gate on lidar returns used for mapping. Larger = ignores closer returns. Smaller = includes closer returns (risks self-hits).
 
 
 # ====================================================================
@@ -313,12 +322,12 @@ planner_node:
       # Larger: stable plans, slower reaction to newly mapped obstacles.
       # Smaller: reacts faster but the path can visibly jitter as the
       #   map fills in.
-      replan_period: 1.0              # **OLD**: 3.0
+      replan_period: 0.5          # **OLD**: 3.0    # **Tested**: 1.0
 
       heuristic_weight: 1.0       # 1.0 = Optimal (no change), >1.0 = Greedy/Fast
-      data_weight: 0.4            # "Path Fidelity" (High = sticks to A* grid, Low = smooths out)
-      smooth_weight: 0.3          # "Rubber Band" (High = cuts corners tightly)         # **WORKING**: 0.25
-      goal_smooth_distance: 2.0   # Distance from the goal (in cells) at which smoothing is relaxed to allow tighter turns.
+      data_weight: 0.3            # "Path Fidelity" (High = sticks to A* grid, Low = smooths out)
+      smooth_weight: 0.20          # "Rubber Band" (High = cuts corners tightly)         # **WORKING**: 0.25
+      goal_smooth_distance: 15.0  # Distance from the goal (in cells) at which smoothing is relaxed to allow tighter turns.       # **WORKING**: 2.0
       smooth_tolerance: 0.01      # Numerical stopping condition for the Gradient Descent algorithm inside _smooth_path function.
 
     costmaps:
@@ -361,16 +370,16 @@ planner_node:
       local:
         inflation_radius_cells: 10.0    # tighter radius favours getting closer to obstacles for local planning
         inflation_weight: 10.0          # lower weight for local costmap to allow squeezing through tighter spaces
-        max_obstacle_range: 2.0         # ignore obstacles beyond range in local costmap (meters)
-        min_obstacle_range: 0.1         # ignore obstacles within range to avoid self-hits in local costmap (meters)
+        max_obstacle_range: 2.5         # ignore obstacles beyond range in local costmap (meters)
+        min_obstacle_range: 0.14        # ignore obstacles within range to avoid self-hits in local costmap (meters)
 
     # Hardcoded mission goal (Kevin's location), in the map frame.
     # Increase x: goal moves east. Decrease x: goal moves west.
     # Increase y: goal moves north. Decrease y: goal moves south.
     goal:
-      x: 0.45
-      y: 2.35
-      tolerance: 0.05
+      x: 3.0
+      y: 1.02
+      tolerance: 0.1
 
 
 # ====================================================================
@@ -382,37 +391,75 @@ navigator_node:
     odom_topic: "/succulence/slam/odometry"
     cmd_vel_topic: "/cmd_vel_unstamped"
 
+    # See motion_model.lidar above for offsets.
+    lidar:
+      x_offset: 0.0
+      y_offset: 0.0
+      yaw_offset: 1.570
+
+    safety:
+      # Determines which hardware-level brake overrides are active.
+      mode: "both"        # Options: "both", "collision", "emergency", "none", defaults: "both"
+      
+      # Soft collision braking distance in metres. The threshold where the 
+      # robot begins its recovery maneuver.
+      # Larger: earlier recovery attempts, keeping a safer standoff distance.
+      # Smaller: allows getting closer to dynamic obstacles before taking action.
+      collision_brake_dist: 0.25
+      
+      # Hard emergency braking distance in metres. The absolute final perimeter
+      # before physical impact.
+      # Larger: guarantees zero collisions, but might permanently trap the robot.
+      # Smaller: only triggers when millimeters away from physical impact (e.g., 12cm).
+      emergency_brake_dist: 0.14
+      
+      # Width of the safety field of view, in radians.
+      # 0.7 rad is approx 40 degrees (20 degrees left and right of center).
+      # Larger: wider peripheral protection, but might trigger on walls during turns.
+      # Smaller: narrow tunnel vision, risks clipping objects with the wheels/sides.
+      forward_cone_angle: 0.7
+
+      # Maximum turn speed (rad/s) allowed during a soft collision recovery spin.
+      # Low values ensure the robot doesn't swing its physical chassis into the object.
+      recovery_spin_rate: 0.3
+
     control:
       # Control loop rate in Hz. Twist commands are republished at this
       # rate.
+      # TurtleBot4 can accept a maximum of 20 Hz, any greater saturates
+      # the local network (router), cuasing packet loss and worse
+      # performance.
       # Larger: smoother control, more CPU.
       # Smaller: jerkier control, less load.
-      rate_hz: 30.0      # **OLD** : 10.0
+      rate_hz: 15.0      # # **OLD** : 10.0
 
       # Pure-pursuit lookahead distance in metres. The controller picks
       # the path point this far ahead of the rover and drives a circular
       # arc to it.
       # Larger: gentle, sweeping turns; cuts corners.
       # Smaller: aggressive, tight tracking of the path; can oscillate.
-      lookahead: 0.3      # **WORKING** : 0.5
+      # lookahead: 0.4          # **WORKING** : 0.5
+      lookahead_min: 0.3        # Tight lookahead for slow, sharp corners (m)
+      lookahead_max: 1.0        # Wide lookahead for fast straights (m)
+      lookahead_ratio: 2.0      # Multiplier for velocity. (e.g. 0.3 m/s * 1.5 = 0.45m lookahead)
 
       # Maximum forward speed in m/s.
       # Larger: faster mission completion but stresses scan matching and
       #   widens turning radius at the controller.
       # Smaller: slower but safer; better localisation and tighter turns.
-      max_linear_v: 0.3     # **OLD** : 0.25 | **WORKING** : 0.3
+      max_linear_v: 0.7     # **OLD** : 0.25 | **WORKING** : 0.3
 
       # Maximum angular speed in rad/s.
       # Larger: tighter turns possible at speed, harder on scan matching
       #   (rotation is the failure mode).
       # Smaller: rover spins more slowly; may struggle on sharp corners.
-      max_angular_v: 0.18  # **OLD** : 0.15 | **WORKING** : 0.25
+      max_angular_v: 0.7  # **OLD** : 0.15 | **WORKING** : 0.25
 
       # Distance to the goal at which the navigator declares arrival
       # and stops.
       # Larger: stops further from the exact goal; more forgiving.
       # Smaller: stops closer; may overshoot or miss in noisy odometry.
-      goal_tolerance: 0.05
+      goal_tolerance: 0.1
 
       # Seconds without a fresh plan before the navigator stops the rover
       # as a safety fallback. Must comfortably exceed `replan_period`.
