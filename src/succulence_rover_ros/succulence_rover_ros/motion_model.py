@@ -100,6 +100,23 @@ class OdometryProcessor(Node):
     def __init__(self):
         super().__init__('odometry_processor')
 
+        # --- Parameters (with safe fallbacks) ---
+        param_defaults: dict[str, str | int | float | bool] = {
+            'odom_topic': '/odom',                      # Physical raw odometry
+            'dead_reckoning.odometry_topic': '/succulence/dead_reckoning/odometry',
+            'dead_reckoning.path_topic': '/succulence/dead_reckoning/path',
+            
+            'frames.odom_frame': 'odom',
+            'frames.base_link_frame': 'base_link',
+            'frames.map_frame': 'map',
+            
+            'motion_model.alpha1': 0.1,
+            'motion_model.alpha2': 0.05,
+            'motion_model.alpha3': 0.05,
+            'motion_model.alpha4': 0.3,                 # Create 3 Base physical wheel skid
+            'motion_model.max_trajectory_length': 1000
+        }
+
         # --- Parameters (all values come from params.yaml) ---
         self.declare_parameter('odom_topic')
         self.declare_parameter('dead_reckoning.odometry_topic')

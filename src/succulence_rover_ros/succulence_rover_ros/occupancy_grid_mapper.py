@@ -356,6 +356,7 @@ class OccupancyGridMapperNode(Node):
             'odom_topic': '/succulence/odom',
             'map_topic': '/succulence/map/odom_only',
             'map_publish_rate': 1.0,
+            'scan_rate_limit': 10.0,
 
             'occupancy_grid.resolution': 0.05,
             'occupancy_grid.width': 400,        # Note: int
@@ -411,7 +412,7 @@ class OccupancyGridMapperNode(Node):
         self.current_pose       = None
         self.scan_count         = 0
         self.last_scan_time     = 0.0
-        self.scan_rate_limit    = 5.0  # Max scans processed per second
+        self.scan_rate_limit    = float(get_p('scan_rate_limit'))  # Max scans processed per second
 
         # --- Publishers / Subscribers ---
         self.map_pub = self.create_publisher(OccupancyGridMsg, map_topic, 10)
