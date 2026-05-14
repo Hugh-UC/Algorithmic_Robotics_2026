@@ -21,6 +21,9 @@ Usage:
     ros2 launch succulence_rover_ros mission.launch.py mode:=sim
     ros2 launch succulence_rover_ros mission.launch.py mode:=physical
 
+    # With Advanced Overrides:
+    ros2 launch succulence_rover_ros mission.launch.py mode:=physical safety_mode:=collision
+
 
 In RViz2 (Fixed Frame: "map"), useful displays:
   - Map        -> /succulence/map
@@ -53,6 +56,12 @@ def generate_launch_description():
         default_value='both',
         description='Which costmaps to use: "both", "global", "local", or "none"'
     )
+    # define safety mode launch argument ('both', 'collision', 'emergency', or 'none')
+    safety_mode_arg = DeclareLaunchArgument(
+        'safety_mode',
+        default_value='both',
+        description='Which safety shields to use: "both", "collision", "emergency", or "none"'
+    )
 
     # validate mode argument
     mode = LaunchConfiguration('mode')
@@ -60,6 +69,7 @@ def generate_launch_description():
     is_sim = EqualsSubstitution(mode, 'sim')
 
     costmap_mode = LaunchConfiguration('costmap')
+    safety_mode = LaunchConfiguration('safety_mode')
 
     # load appropriate params file (mode-specified)
     params_file = [config_dir, '/params_', mode, '.yaml']
@@ -95,7 +105,10 @@ def generate_launch_description():
         executable='navigator_node',
         name='navigator_node',
         output='screen',
-        parameters=[params_file],
+        parameters=[
+            params_file,
+            {'safety.mode': safety_mode}        # inject safety launch flag
+        ],
     )
 
     # event handler: watches nav_node, prints success, and kills ROS 2.
@@ -136,7 +149,6 @@ def generate_launch_description():
                 '--frame-id', base_link_frame, '--child-frame-id', lidar_frame
             ],
             output='screen',
-            condition=IfCondition(is_sim)
         ),
 
         Node(
@@ -181,6 +193,7 @@ def generate_launch_description():
     return LaunchDescription([
         mode_arg,
         costmap_mode_arg,
+        safety_mode_arg,
         odom_frame_arg,
         base_link_frame_arg,
         lidar_frame_arg,
