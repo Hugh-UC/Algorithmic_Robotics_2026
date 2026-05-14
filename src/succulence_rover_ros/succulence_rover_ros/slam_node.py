@@ -54,53 +54,53 @@ class SlamNode(Node):
         super().__init__('slam_node')
 
         param_defaults: dict[str, str | int | float | bool] = {
-            'scan_topic': '/succulence/scan',
-            'odom_topic': '/succulence/odom',
+            'scan_topic': '/scan',                      # Physical raw Lidar
+            'odom_topic': '/odom',                      # Physical raw Odometry
             'map_topic': '/succulence/map',
             'slam_odometry_topic': '/succulence/slam/odometry',
             'slam_path_topic': '/succulence/slam/path',
 
-            'slam.keyframe_distance': 0.1,
-            'slam.keyframe_angle': 0.1,
-            'slam.optimization_interval': 5,
+            'slam.keyframe_distance': 0.06,             # High density for physical speed
+            'slam.keyframe_angle': 0.05,                # High density for physical slip
+            'slam.optimization_interval': 3,
             'slam.num_iterations': 10,
-            'slam.map_publish_interval': 1.0,
-            'slam.scan_match_cov_xy': 0.01,
-            'slam.scan_match_cov_theta': 0.01,
-            # Map-Scan Weighting
-            'slam.map_match_weight': 0.3,               # 30% map, 70% scan
-            'slam.scan_rate_limit': 10.0,               # Hz, slam scan limit
+            'slam.map_publish_interval': 0.3,           # Fast refresh for physical safety
+            'slam.scan_match_cov_xy': 0.003,
+            'slam.scan_match_cov_theta': 0.0015,
+            
+            'slam.map_match_weight': 0.3,
+            'slam.scan_rate_limit': 10.0,               # Matches RPLIDAR-A1 motor limit
 
-            'scan_matcher.search_x': 0.2,
-            'scan_matcher.search_y': 0.2,
-            'scan_matcher.search_theta': 0.2,
+            'scan_matcher.search_x': 0.5,
+            'scan_matcher.search_y': 0.5,
+            'scan_matcher.search_theta': 0.1,
             'scan_matcher.resolution_x': 0.025,
             'scan_matcher.resolution_y': 0.025,
-            'scan_matcher.resolution_theta': 0.025,
+            'scan_matcher.resolution_theta': 0.02,
             'scan_matcher.min_score': 0.45,
-            'scan_matcher.local_grid_size': 1000,       # 25m x 25m at 0.025 res
+            'scan_matcher.local_grid_size': 1000,
             'scan_matcher.local_grid_resolution': 0.025,
 
             'occupancy_grid.resolution': 0.025,
-            'occupancy_grid.width': 200,
-            'occupancy_grid.height': 200,
-            'occupancy_grid.origin_x': -20.0,
-            'occupancy_grid.origin_y': -20.0,
-            'occupancy_grid.log_odds_occupied': 0.7,
+            'occupancy_grid.width': 300,                # Physical 7.5m map
+            'occupancy_grid.height': 300,
+            'occupancy_grid.origin_x': -1.0,
+            'occupancy_grid.origin_y': -1.0,
+            'occupancy_grid.log_odds_occupied': 0.85,
             'occupancy_grid.log_odds_free': 0.4,
-            'occupancy_grid.log_odds_max': 100.0,
-            'occupancy_grid.log_odds_min': -100.0,
-            'occupancy_grid.max_range': 3.5,
+            'occupancy_grid.log_odds_max': 5.0,
+            'occupancy_grid.log_odds_min': -5.0,
+            'occupancy_grid.max_range': 7.5,
             'occupancy_grid.min_range': 0.1,
 
             'motion_model.alpha1': 0.1,
-            'motion_model.alpha2': 0.1,
-            'motion_model.alpha3': 0.1,
-            'motion_model.alpha4': 0.1,
+            'motion_model.alpha2': 0.05,
+            'motion_model.alpha3': 0.05,
+            'motion_model.alpha4': 0.3,
 
             'lidar.x_offset': 0.0,
             'lidar.y_offset': 0.0,
-            'lidar.yaw_offset': 0.0
+            'lidar.yaw_offset': 1.570                   # Physical Lidar Mount
         }
 
         # declare all parameters, with default
@@ -238,7 +238,7 @@ class SlamNode(Node):
         return dist > self.keyframe_distance or angle > self.keyframe_angle
 
     def _process_keyframe(self, scan_msg: LaserScan):
-        """Core SLAM loop: add node, add edges (odom + scan-match), optimise."""
+        """Core SLAM loop: add node, add edges (odom + scan-match + map-match), optimise."""
         ranges = np.array(scan_msg.ranges)
         angle_increment = scan_msg.angle_increment
         scan_points = scans_from_ranges(
@@ -253,18 +253,21 @@ class SlamNode(Node):
             odom_relative = utils.pose_difference(
                 self.last_keyframe_pose, self.current_odom_pose)
 
-            # Run scan-match first so we know whether to trust odom on this
-            # keyframe (saturation -> odom is also unreliable).
+            # 1. Relative Scan-to-Scan Matching
             matched_pose, match_cov, match_score = self.scan_matcher.match(
                 self.last_keyframe_scan, scan_points, odom_relative)
 
-            # Detect search-window saturation: the matcher's peak is sitting
-            # within 5% of the search boundary, which means the true optimum
-            # is outside the window and we got a clipped, biased answer.
-            # Score can still look high (random correlations at the edge),
-            # so min_score alone won't catch it. Threshold loosened from 0.85
-            # to 0.95 -- 0.85 was rejecting too many borderline-good matches
-            # and starving the graph of scan-match edges.
+            # 2. Absolute Scan-to-Map Matching (YOUR EXTENSION)
+            map_matched_global, map_match_cov, map_match_score = self.scan_matcher.match_to_map(
+                global_grid=self.occupancy_grid.grid,
+                map_origin_x=self.occupancy_grid.origin_x,
+                map_origin_y=self.occupancy_grid.origin_y,
+                map_resolution=self.occupancy_grid.resolution,
+                scan_new=scan_points,
+                initial_guess_global=self.current_odom_pose
+            )
+
+            # Detect search-window saturation
             sx = self.scan_matcher.search_x
             sy = self.scan_matcher.search_y
             st = self.scan_matcher.search_theta
@@ -273,24 +276,24 @@ class SlamNode(Node):
                          abs(shift[1]) >= 0.95 * sy or
                          abs(shift[2]) >= 0.95 * st)
 
-            # Odometry edge covariance: alpha model on the full delta
-            # (delta^2 scaling means accumulating tiny per-message Q's
-            # under-counts noise by ~100x). When scan-match saturates we
-            # keep odom at full strength -- the keyframe's only anchor.
+            # Odometry edge
             odom_cov = compute_motion_covariance(
                 odom_relative, self.alpha1, self.alpha2,
                 self.alpha3, self.alpha4)
             for i in range(3):
-                odom_cov[i, i] = max(odom_cov[i, i],
-                                     self.current_odom_cov[i, i],
-                                     1e-4)
+                odom_cov[i, i] = max(odom_cov[i, i], self.current_odom_cov[i, i], 1e-4)
 
             self.pose_graph.add_edge(node_id - 1, node_id, odom_relative, odom_cov)
 
+            # Add Scan-to-Scan Edge
             if match_score > self.scan_matcher.min_score and not saturated:
                 match_cov[0, 0] = max(match_cov[0, 0], self.scan_match_cov_xy)
                 match_cov[1, 1] = max(match_cov[1, 1], self.scan_match_cov_xy)
                 match_cov[2, 2] = max(match_cov[2, 2], self.scan_match_cov_theta)
+                
+                # Scale covariance by relative weight (lower weight = higher covariance/less trust)
+                match_cov /= (1.0 - self.map_match_weight + 1e-6)
+                
                 self.pose_graph.add_edge(node_id - 1, node_id, matched_pose, match_cov)
                 self.get_logger().info(
                     f'  Scan-match accepted: score={match_score:.3f}, '
@@ -300,10 +303,19 @@ class SlamNode(Node):
                     f'  Scan-match SATURATED (boundary): score={match_score:.3f}, '
                     f'shift=[{shift[0]:+.3f}, {shift[1]:+.3f}, {shift[2]:+.3f}] '
                     f'-- weakened odom edge, no scan-match edge')
-            else:
-                self.get_logger().warn(
-                    f'  Scan-match REJECTED low score: score={match_score:.3f} < '
-                    f'min_score={self.scan_matcher.min_score}')
+
+            # Add Scan-to-Map Edge (YOUR EXTENSION)
+            if map_match_score > self.scan_matcher.min_score:
+                map_match_cov[0, 0] = max(map_match_cov[0, 0], self.scan_match_cov_xy)
+                map_match_cov[1, 1] = max(map_match_cov[1, 1], self.scan_match_cov_xy)
+                map_match_cov[2, 2] = max(map_match_cov[2, 2], self.scan_match_cov_theta)
+                
+                # Scale covariance by absolute map weight
+                map_match_cov /= (self.map_match_weight + 1e-6)
+                
+                # Absolute constraint: Edge from origin (Node 0) to current node
+                self.pose_graph.add_edge(0, node_id, map_matched_global, map_match_cov)
+                self.get_logger().info(f'  Map-match accepted: score={map_match_score:.3f}')
 
         self.last_keyframe_pose = self.current_odom_pose.copy()
         self.last_keyframe_scan = scan_points
