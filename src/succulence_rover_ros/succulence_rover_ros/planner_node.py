@@ -42,14 +42,14 @@ class PlannerNode(Node):
             'plan_topic': '/succulence/plan',
             'frames.map_frame': 'map',
             'costmap_topic': '/succulence/costmap',
-            'scan_topic': '/succulence/scan',
+            'scan_topic': '/scan',                      # Physical Lidar
 
             # Planning
-            'planning.replan_period': 1.0,
-            'planning.heuristic_weight': 1.2,
-            'planning.data_weight': 0.1,
-            'planning.smooth_weight': 0.5,
-            'planning.goal_smooth_distance': 2.0,
+            'planning.replan_period': 0.5,
+            'planning.heuristic_weight': 1.0,           # Optimal for small 5x5m pen
+            'planning.data_weight': 0.4,
+            'planning.smooth_weight': 0.3,
+            'planning.goal_smooth_distance': 10.0,      # Disable smoothing for last 25cm
             'planning.smooth_tolerance': 0.01,
 
             # Costmaps
@@ -60,20 +60,20 @@ class PlannerNode(Node):
             'costmaps.global.inflation_radius_cells': 12.0,
             'costmaps.global.inflation_weight': 50.0,
 
-            'costmaps.local.inflation_radius_cells': 15.0,
+            'costmaps.local.inflation_radius_cells': 10.0,
             'costmaps.local.inflation_weight': 15.0,
-            'costmaps.local.max_obstacle_range': 3.0,
+            'costmaps.local.max_obstacle_range': 2.0,   # Physical local radius
             'costmaps.local.min_obstacle_range': 0.1,
             
             # Sensors
             'lidar.x_offset': 0.0,
             'lidar.y_offset': 0.0,
-            'lidar.yaw_offset': 0.0,
+            'lidar.yaw_offset': 1.570,                  # Physical TB4 Lidar rotation
 
             # Goal
-            'goal.x': 0.0,
-            'goal.y': 0.0,
-            'goal.tolerance': 0.05
+            'goal.x': 0.45,                             # Physical lab test goal
+            'goal.y': 2.35,
+            'goal.tolerance': 0.05                      # Must match Navigator goal_tolerance
         }
         
         # declare all parameters, with default
