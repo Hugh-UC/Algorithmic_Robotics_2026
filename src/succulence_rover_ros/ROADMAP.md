@@ -15,7 +15,7 @@
 * **The Solution:** Replaced boolean grids with float gradients. Walls are `np.inf`, but the surrounding inflation cells carry a decaying penalty cost. By injecting this into the A* `tentative_g` calculation, the robot naturally prefers to drive straight down the middle of hallways. Includes a toggleable Local Costmap for dynamic obstacle avoidance.
 
 ### 4. Coarse-to-Fine Scan Matching
-* **The Problem:** The original `match()` function used an exhaustive, brute-force 3D grid search ($O(N^3)$) that consumed massive amounts of CPU.
+* **The Problem:** The original `match()` function used an exhaustive, brute-force 3D grid search $(O(N^3))$ that consumed massive amounts of CPU.
 * **The Solution:** Rewrote the matcher to perform a "coarse" search with large steps to find the general peak, followed by a "fine" search strictly around that local peak. SLAM now runs flawlessly with significantly reduced computational overhead.
 
 ### 5. Adaptive Pure Pursuit Lookahead
