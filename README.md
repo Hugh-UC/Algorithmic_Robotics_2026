@@ -115,7 +115,7 @@ For the physical setup follow the above steps but pull and bring up `compose-phy
 
 ### Run in Simulation (Unity Mars Environment):
 
-With sim stack up, press R to bring up HMI, select autonmous mode and add Kevin (default goal coordinates)
+With sim stack up, press R to bring up HMI, select autonomous mode and add Kevin (default goal coordinates)
 
 In a new terminal in the web browser VS Code interface, open Rviz2 with the provided config file
 
