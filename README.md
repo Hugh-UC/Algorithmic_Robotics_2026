@@ -14,7 +14,7 @@ Extension of the handcrafted autonomous navigation stack (SLAM) for the Tutrtleb
 
 ## Group Member Contributions:
 
-Hugh:
+### Hugh:
 1. Collaborated throughout lab sessions to fill in provided packages and complete TODO's
 2. Experimented with parameter tuning in simulation environment for implementation and testing on the physical rover
 3. Implemented new additions to the SLAM stack:
@@ -25,12 +25,12 @@ Hugh:
     - Added dynamic weighting to the look ahead parameter for pure pursuit, now weighted by the rover's current translational/rotational velocity
     - Upgraded discrete occupancy grid map from binary (0 or 1) to a probabilistic log-odds grid (0-100)
   
-Patrick:
+### Patrick:
 1. Collaborated throughout lab sessions to fill in provided packages and complete TODO's
 2. Experimented with parameter tuning in simulation environment for implementation and testing on the physical rover
 3. Completed README file
 
-Caleb:
+### Caleb:
 1. Collaborated throughout lab sessions to fill in provided packages and complete TODO's
 2. Experimented with parameter tuning in simulation environment for implementation and testing on the physical rover
 
