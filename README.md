@@ -54,7 +54,7 @@ git clone https://github.com/CollaborativeRoboticsLab/algorithmic-robots-world.g
 ```
 Enter the folder
 ```bash
-cd industrial-robots-and-systems-world
+cd ~/algorithmic-robots-world 
 ```
 
 Pull the latest docker containers
@@ -67,7 +67,7 @@ docker compose pull
 
 Required environmental variables need to be in a `.env` file. An `example.env` file is available. Rename that file to `.env` and update the values as required.
 
-
+[More information on Parameters](https://github.com/CollaborativeRoboticsLab/algorithmic-robots-world/blob/main/docs/parameters.md)
 
 ## Build
 
