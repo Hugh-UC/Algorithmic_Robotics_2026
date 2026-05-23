@@ -2,17 +2,17 @@
 
 Extension of the handcrafted autonomous navigation stack (SLAM) for the Tutrtlebot 4 rover and simulation environment provided by [CollaborativeRoboticsLab](https://github.com/CollaborativeRoboticsLab/algorithmic-robots-world) for the Algorithmic Robotics (12062), Semester 1, 2026 University of Canberra unit.
 
-##**Group ID:** 
+##Group ID:
 
     Group_001
 
-##**Student ID's:**
+##Student ID's:
 
     Hugh:     u3276400
     Patrick:  u3279178
     Caleb:    u3275593
 
-##**Group Member Contributions:**
+##Group Member Contributions:
 
 Hugh:
 1. Collaborated throughout lab sessions to fill in provided packages and complete TODO's
