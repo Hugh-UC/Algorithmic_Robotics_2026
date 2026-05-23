@@ -154,7 +154,7 @@ Launch the `mission.launch` file, implements the full SLAM stack to autonomously
 ros2 launch succulence_rover_ros mission.launch.py mode:=physical
 ```
 
-Note the goal coordiantes are configure for our lab environment, configure them for your own environment in the `params_physical.yaml` file found at:
+Note the goal coordiantes are configured for our lab environment, configure them for your own environment in the `params_physical.yaml` file found at:
 ```bash
 workspace/succulence_ws/src/config
 ```
