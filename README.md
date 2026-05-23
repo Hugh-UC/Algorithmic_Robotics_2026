@@ -82,15 +82,9 @@ cd ~/algorithmic-robots-world/workspace
 mkdir succulence_ws
 ```
 
-In the workspace create a source file
+In the new workspace directory clone this github repo
 ```bash
 cd succulence_ws
-mkdir src
-```
-
-In the source file clone this github repo
-```bash
-cd src
 gh repo clone https://github.com/Hugh-UC/Algorithmic_Robotics_2026.git
 ```
 
@@ -108,8 +102,9 @@ docker compose -f compose-simulation.yaml up
 
 3. Navigate to the workspace source directory in the web-server terminal and build ROS packages
 ```bash
-cd 
-colcon build 
+cd succulence_ws 
+colcon build --packages-select succulence_rover_ros --symlink-install 
+source install/setup.bash 
 ```
 
 <br>
