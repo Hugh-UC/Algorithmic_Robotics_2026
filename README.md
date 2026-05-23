@@ -131,7 +131,7 @@ _(Note: If no mode is provided, it defaults to `sim`.)_
 
 ### Run on physical Turtlebot 4 rover
 
-Follow steps in [Build](#Build) to bring up the physical container and build ROS packages (compose-physical.yaml)
+Follow steps in [Build](#Build) to bring up the physical container and build ROS packages (compose-physical.yaml instead of sim container)
 
 1. SSH to rover in the web browser VS Code interface, replace `001` with number on rover (for our labs)
 ```bash
