@@ -63,12 +63,18 @@ docker compose pull
 ```
 
 
-
 ### Configure the Parameters
 
 Required environmental variables need to be in a `.env` file. An `example.env` file is available. Rename that file to `.env` and update the values as required.
 
 ## Build
+
+Fix workspace permissions, the Docker container’s persistent volume may have been created by root, so your user 
+cannot write to it. Fix this by running:
+```bash
+cd ~/algorithmic-robots-world 
+sudo chown -R $USER:$USER ./workspace 
+```
 
 In 'algorithmic-robots-world/workspace' directory create a new workspace (e.g. succulence_ws)
 ```bash
@@ -88,10 +94,22 @@ cd src
 gh repo clone https://github.com/Hugh-UC/Algorithmic_Robotics_2026.git
 ```
 
-Navigate to the workspace and build ROS packages
+Build ROS packages in the workspace via web-server
+
+1. Start Simulation environment
+
 ```bash
-cd ~/irs-workspace
-colcon build
+cd algorithmic-robots-world
+docker compose -f compose-simulation.yaml pull
+xhost +local:root
+docker compose -f compose-simulation.yaml up
+```
+2. With the stack up, open the web browser-based VS Code interface at http://127.0.0.1:8080.
+
+3. Navigate to the workspace source directory in the web-server terminal and build ROS packages
+```bash
+cd 
+colcon build 
 ```
 
 <br>
