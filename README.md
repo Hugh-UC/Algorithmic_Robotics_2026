@@ -129,7 +129,7 @@ ros2 launch succulence_rover_ros mission.launch.py mode:=sim
 ```
 _(Note: If no mode is provided, it defaults to `sim`.)_
 
-### Run on physical Turtlebot 4 rover
+### Run on Physical Turtlebot 4 Rover
 
 Follow steps in [Build](#Build) to bring up the physical container and build ROS packages (compose-physical.yaml instead of sim container)
 
