@@ -113,7 +113,7 @@ For the physical setup follow the above steps but pull and bring up `compose-phy
 
 ## Run
 
-### Run in Simulation (Unity Mars):
+### Run in Simulation (Unity Mars Environment):
 
 With sim stack up, press R to bring up HMI, select autonmous mode and add Kevin (default goal coordinates)
 
@@ -131,13 +131,33 @@ _(Note: If no mode is provided, it defaults to `sim`.)_
 
 ### Run on physical Turtlebot 4 rover
 
+Follow steps in [Build](#Build) to bring up the physical container and build ROS packages (compose-physical.yaml)
 
+1. SSH to rover in the web browser VS Code interface, replace `001` with number on rover (for our labs)
+```bash
+ssh ubuntu@turtlebot4-001
+```
+or replace with `ssh ubuntu@[ipaddress]` for your own Turtlebot 4
+
+Password:
+```bash
+turtlebot3
+```
+In a new terminal in the web browser VS Code interface, open Rviz2 with the provided config file
+
+```bash
+rviz2 -d succulence_ws/src/succulence_rover_ros/config/succulance_costmap.rviz   
+```
+Launch the `mission.launch` file, implements the full SLAM stack to autonomously navigate to the goal coordinates (Kevin)
 
 ```bash
 ros2 launch succulence_rover_ros mission.launch.py mode:=physical
 ```
 
-
+Note the goal coordiantes are configure for our lab environment, configure them for your own environment in the `params_physical.yaml` file found at:
+```bash
+workspace/succulence_ws/src/config
+```
 
 
 ### 🧪 Advanced Testing Flags
