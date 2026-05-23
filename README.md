@@ -78,7 +78,7 @@ cd ~/algorithmic-robots-world
 sudo chown -R $USER:$USER ./workspace 
 ```
 
-In 'algorithmic-robots-world/workspace' directory create a new workspace (e.g. succulence_ws)
+In `algorithmic-robots-world/workspace` directory create a new workspace (e.g. succulence_ws)
 ```bash
 cd ~/algorithmic-robots-world/workspace
 mkdir succulence_ws
@@ -95,18 +95,77 @@ gh repo clone https://github.com/Hugh-UC/Algorithmic_Robotics_2026.git
 1. Start Simulation environment
 
 ```bash
-cd algorithmic-robots-world
+cd ~/algorithmic-robots-world
 docker compose -f compose-simulation.yaml pull
 xhost +local:root
 docker compose -f compose-simulation.yaml up
 ```
 2. With the stack up, open the web browser-based VS Code interface at http://127.0.0.1:8080.
 
-3. Navigate to the workspace source directory in the web-server terminal and build ROS packages
+3. Navigate to the workspace directory in the web-server terminal and build ROS packages
 ```bash
 cd succulence_ws 
 colcon build --packages-select succulence_rover_ros --symlink-install 
 source install/setup.bash 
 ```
 
-**Note:** These flags require a relatively modern NVIDIA driver (435.xx or newer) to function correctly. ([NVIDIA 2019](https://download.nvidia.com/XFree86/Linux-x86_64/435.17/README/primerenderoffload.html#:~:text=To%20configure%20a%20graphics%20application,yet%20support%20PRIME%20render%20offload.))
+For the physical setup follow the above steps but pull and bring up `compose-physical.yaml` in step 1
+
+## Run
+
+### Run in Simulation (Unity Mars):
+
+With sim stack up, press R to bring up HMI, select autonmous mode and add Kevin (default goal coordinates)
+
+In a new terminal in the web browser VS Code interface, open Rviz2 with the provided config file
+
+```bash
+rviz2 -d succulence_ws/src/succulence_rover_ros/config/succulance_costmap.rviz   
+```
+Launch the `mission.launch` file, implements the full SLAM stack to autonomously navigate to the goal coordinates (Kevin)
+
+```bash
+ros2 launch succulence_rover_ros mission.launch.py mode:=sim
+```
+_(Note: If no mode is provided, it defaults to `sim`.)_
+
+### Run on physical Turtlebot 4 rover
+
+
+
+```bash
+ros2 launch succulence_rover_ros mission.launch.py mode:=physical
+```
+
+
+
+
+### 🧪 Advanced Testing Flags
+You can rapidly override the navigation architecture without editing YAML files using launch flags.
+
+#### Costmaps
+**Global Only | Disable the high-speed local reflex bubble:**
+```bash
+ros2 launch succulence_rover_ros mission.launch.py mode:=physical costmap_mode:=global
+```
+
+**Local Only | Disable the global SLAM map entirely:**
+```bash
+ros2 launch succulence_rover_ros mission.launch.py mode:=physical costmap_mode:=local
+```
+
+- `both`: Uses both local and global costmaps (default).
+- `global`: Disables the high-speed local reflex bubble.
+- `local`: Disables the global SLAM map entirely.
+- `none`: Completely disables costmaps.
+
+#### Safety Shield Overrides:
+
+```bash
+ros2 launch succulence_rover_ros mission.launch.py mode:=physical safety_mode:=collision
+```
+
+- `both`: Enables Soft Recovery and Hard Motor Locks (default).
+- `collision`: Enables only the Soft Recovery brake.
+- `emergency`: Enables only the Hard Motor Lock.
+- `none`: Disables the Lidar safety shield entirely (A* planner handles all dodging).
