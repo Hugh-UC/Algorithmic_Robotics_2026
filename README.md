@@ -67,6 +67,8 @@ docker compose pull
 
 Required environmental variables need to be in a `.env` file. An `example.env` file is available. Rename that file to `.env` and update the values as required.
 
+
+
 ## Build
 
 Fix workspace permissions, the Docker container’s persistent volume may have been created by root, so your user 
@@ -88,7 +90,7 @@ cd succulence_ws
 gh repo clone https://github.com/Hugh-UC/Algorithmic_Robotics_2026.git
 ```
 
-Build ROS packages in the workspace via web-server
+### Build ROS packages in the workspace via web-server
 
 1. Start Simulation environment
 
@@ -106,6 +108,8 @@ cd succulence_ws
 colcon build --packages-select succulence_rover_ros --symlink-install 
 source install/setup.bash 
 ```
+
+
 
 <br>
 
