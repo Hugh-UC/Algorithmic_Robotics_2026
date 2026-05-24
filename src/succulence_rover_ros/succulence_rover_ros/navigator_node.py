@@ -241,6 +241,10 @@ class NavigatorNode(Node):
 
         v, w, arrived = self.follower.compute_cmd(self.pose, self.path)
 
+        # Apply a simple low-pass filter to velocity to stop the "jerk"
+        # self.current_v is the tracking variable you already have.
+        v = 0.8 * self.current_v + 0.2 * v
+
         # soft collision (recovery spin)
         if self.collision_stop:
             v = 0.0                     # stop forward movement
@@ -268,6 +272,7 @@ class NavigatorNode(Node):
         twist.linear.x = float(v)
         twist.angular.z = float(w)
         self.cmd_pub.publish(twist)
+        self.current_v = float(v)
 
     def _publish_lookahead_visual(self, lookahead: float):
         """

@@ -17,7 +17,7 @@ import rclpy
 from rclpy.node import Node, Publisher
 from nav_msgs.msg import OccupancyGrid as OccupancyGridMsg, Odometry, Path, MapMetaData
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import PoseStamped, Quaternion
+from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from rcl_interfaces.msg import ParameterDescriptor
 from scipy import ndimage
 from scipy.spatial.transform import Rotation
@@ -59,11 +59,13 @@ class PlannerNode(Node):
 
             'costmaps.global.inflation_radius_cells': 12.0,
             'costmaps.global.inflation_weight': 50.0,
+            'costmaps.global.update_window_m': 15.0,
 
             'costmaps.local.inflation_radius_cells': 10.0,
             'costmaps.local.inflation_weight': 15.0,
             'costmaps.local.max_obstacle_range': 2.0,   # Physical local radius
             'costmaps.local.min_obstacle_range': 0.1,
+            'costmaps.local.window_size': 6.0,
             
             # Sensors
             'lidar.x_offset': 0.0,
@@ -108,11 +110,13 @@ class PlannerNode(Node):
 
         self.global_inf_radius : float  = float(get_p('costmaps.global.inflation_radius_cells'))
         self.global_inf_weight : float  = float(get_p('costmaps.global.inflation_weight'))
+        self.global_update_window       = float(get_p('costmaps.global.update_window_m'))
         
         self.local_inf_radius : float   = float(get_p('costmaps.local.inflation_radius_cells'))
         self.local_inf_weight : float   = float(get_p('costmaps.local.inflation_weight'))
         self.local_max_range : float    = float(get_p('costmaps.local.max_obstacle_range'))
         self.local_min_range : float    = float(get_p('costmaps.local.min_obstacle_range'))
+        self.local_window_size          = float(get_p('costmaps.local.window_size'))
 
         # Sensors
         self.lidar_x_offset : float     = float(get_p('lidar.x_offset'))
@@ -125,6 +129,7 @@ class PlannerNode(Node):
         self.goal_tolerance : float = float(get_p('goal.tolerance'))
 
         # internal state
+        self.latest_map: OccupancyGridMsg | None    = None
         self.global_costmap:  np.ndarray | None     = None
         self.global_map_info : MapMetaData | None   = None
         self.latest_scan : LaserScan | None         = None
@@ -149,7 +154,8 @@ class PlannerNode(Node):
         self.get_logger().info(
             f'PlannerNode started — map: {map_topic}, odom: {odom_topic}, '
             f'goal: ({self.goal_x:.2f}, {self.goal_y:.2f})')
-        
+
+
     def _scan_cb(self, msg: LaserScan):
         """
         Callback for handling incoming laser scan messages.
@@ -158,6 +164,7 @@ class PlannerNode(Node):
             msg (LaserScan): incoming laser scan message.
         """
         self.latest_scan = msg
+
 
     def _map_cb(self, msg: OccupancyGridMsg):
         """
@@ -168,15 +175,21 @@ class PlannerNode(Node):
             msg (OccupancyGridMsg): incoming occupancy grid message.
         """
         info = msg.info
+        # Convert ROS byte data to a NumPy grid
         grid = np.frombuffer(bytes(msg.data), dtype=np.int8).reshape(info.height, info.width).copy()
 
+        # Call the C++ powered vectorized helper from astar.py
         self.global_costmap = inflate_obstacles(
+            'Global', 'c++',
             grid, self.global_inf_radius,
             self.occ_threshold, self.unknown_as_obstacle,
-            inflation_weight=self.global_inf_weight
+            self.global_inf_weight
         )
+
+        # store map and info, for callbacks and visualisation.
         self.global_map_info = info
         self.latest_map = msg
+
 
     def _odom_cb(self, msg: Odometry):
         """
@@ -190,6 +203,7 @@ class PlannerNode(Node):
         # extract yaw (theta) from quaternion, to project laser scan
         q = msg.pose.pose.orientation
         self.robot_theta = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_euler('xyz')[2]
+
 
     def _world_to_cell(self, x: float, y: float, info: MapMetaData) -> tuple[int, int]:
         """
@@ -207,6 +221,7 @@ class PlannerNode(Node):
         row = int((y - info.origin.position.y) / info.resolution)
         return row, col
 
+
     def _cell_to_world(self, row: int, col: int, info: MapMetaData) -> tuple[float, float]:
         """
         Converts grid cell indices to world coordinates (meters).
@@ -222,7 +237,8 @@ class PlannerNode(Node):
         x = info.origin.position.x + (col + 0.5) * info.resolution
         y = info.origin.position.y + (row + 0.5) * info.resolution
         return x, y
-    
+
+
     def _clear_inf_halo(self, cost_map: np.ndarray, center: tuple[int, int], radius_cells: float):
         """
         Clears solid np.inf walls around a center point so A* doesn't get trapped.
@@ -246,6 +262,7 @@ class PlannerNode(Node):
                         # Demote impassable wall to a high-cost navigable zone
                         cost_map[r, c] = self.global_inf_weight
 
+
     def _replan(self):
         """
         Generates a path by overlaying live dynamic obstacles (Local Costmap) 
@@ -258,64 +275,109 @@ class PlannerNode(Node):
         if self.global_costmap is None or self.robot_xy is None or self.global_map_info is None:
             return
 
-        info : MapMetaData = self.global_map_info
+        info = self.global_map_info
 
-        if self.costmap_mode in ['both', 'global'] and self.global_costmap is not None:
+        # Prepare base costmap (Global + Local)
+        cost_map = self._prepare_cost_map(info)
+
+        # Compute Path (A* + Smoothing)
+        smoothed_path = self._compute_path(cost_map, info)
+        
+        # Publish results
+        if smoothed_path:
+            self._publish_path(smoothed_path)
+            self._visualize_costmap(cost_map, info)
+        else:
+            self._publish_empty_path()
+
+
+    def _prepare_cost_map(self, info: MapMetaData) -> np.ndarray:
+        """
+        Combines static global costmap with dynamic local scan obstacles.
+
+        Args:
+            info (MapMetaData): ROS MapMetaData containing resolution and origin.
+
+        Returns:
+            np.ndarray: Combined 2D float array representing the active costmap.
+        """
+        # Start with global
+        if self.costmap_mode in ['both', 'global']:
             cost_map = self.global_costmap.copy()
         else:
             cost_map = np.zeros((info.height, info.width), dtype=np.float32)
 
-        # ----------------------------------------------------
-        # 2: Inject Local Costmap
-        # ----------------------------------------------------
+        # Inject local dynamic obstacles if needed
         if self.costmap_mode in ['both', 'local'] and self.latest_scan is not None:
-            robot_x, robot_y = self.robot_xy
-
-            # Project laser scan into world frame, find obstacle locations in grid
-            c_r, s_r = np.cos(self.robot_theta), np.sin(self.robot_theta)
-            lidar_x = robot_x + c_r * self.lidar_x_offset - s_r * self.lidar_y_offset
-            lidar_y = robot_y + s_r * self.lidar_x_offset + c_r * self.lidar_y_offset
-
-            ranges = np.array(self.latest_scan.ranges)
-            angle_min = self.latest_scan.angle_min
-            angle_inc = self.latest_scan.angle_increment
-
-            # Map laser hits to grid cells
-            hit_cells = set()
-            for i, r in enumerate(ranges):
-                if np.isnan(r) or r < self.local_min_range or r > self.local_max_range:
-                    continue
-
-                beam_angle = self.robot_theta + self.lidar_yaw_offset + angle_min + i * angle_inc
-                ox, oy = lidar_x + r * np.cos(beam_angle), lidar_y + r * np.sin(beam_angle)
-                
-                col = int((ox - info.origin.position.x) / info.resolution)
-                row = int((oy - info.origin.position.y) / info.resolution)
-
-                if 0 <= row < info.height and 0 <= col < info.width:
-                    hit_cells.add((row, col))
+            self._inject_local_costmap(cost_map, info)
             
-            # Calculate integer boundary for array slicing
-            local_bound = int(np.ceil(self.local_inf_radius))
+        return cost_map
 
-            # Localised inflation around new dynamic hits
-            for row, col in hit_cells:
-                cost_map[row, col] = np.inf
 
-                r0, r1 = max(0, row - local_bound), min(info.height, row + local_bound + 1)
-                c0, c1 = max(0, col - local_bound), min(info.width, col + local_bound + 1)
-                
-                for rr in range(r0, r1):
-                    for cc in range(c0, c1):
-                        if cost_map[rr, cc] == np.inf:
-                            continue
+    def _inject_local_costmap(self, cost_map: np.ndarray, info: MapMetaData):
+        """
+        Projects laser scans into the costmap using vectorized math and C++ inflation.
+        """
+        # ----------------------------------------------------
+        # 2: Inject Local Costmap (ROI-Limited)
+        # ----------------------------------------------------
+        # A. Define Local Pixel Box around robot
+        res = info.resolution
+        win = int(self.local_window_size / res)
+        r_idx, c_idx = self._world_to_cell(self.robot_xy[0], self.robot_xy[1], info)
+        
+        r0, r1 = max(0, r_idx - win), min(info.height, r_idx + win)
+        c0, c1 = max(0, c_idx - win), min(info.width, c_idx + win)
+        
+        # B. Create a blank local (ROI) grid
+        local_height, local_width = r1 - r0, c1 - c0
+        local_grid = np.zeros((local_height, local_width), dtype=np.int8)
+        
+        # C. Vectorized Projection of Laser Scan (performance-critical)
+        ranges = np.array(self.latest_scan.ranges)
+        
+        # Create a full array of angles
+        angles = self.robot_theta + self.lidar_yaw_offset + self.latest_scan.angle_min + \
+                 np.arange(len(ranges)) * self.latest_scan.angle_increment
+        
+        # Filter by range
+        valid = (ranges >= self.local_min_range) & (ranges <= self.local_max_range)
+        
+        # Project laser scan into the local grid
+        lidar_x = self.robot_xy[0] + np.cos(self.robot_theta) * self.lidar_x_offset - np.sin(self.robot_theta) * self.lidar_y_offset
+        lidar_y = self.robot_xy[1] + np.sin(self.robot_theta) * self.lidar_x_offset + np.cos(self.robot_theta) * self.lidar_y_offset
 
-                        dist = np.hypot(rr - row, cc - col)
+        ox = lidar_x + ranges[valid] * np.cos(angles[valid])
+        oy = lidar_y + ranges[valid] * np.sin(angles[valid])
+        
+        # Project to grid (indices relative to origin)
+        cols = ((ox - info.origin.position.x) / res).astype(int)
+        rows = ((oy - info.origin.position.y) / res).astype(int)
+        
+        # Offset to ROI box
+        grid_rows, grid_cols = rows - r0, cols - c0
+        
+        # Mask points inside the ROI
+        mask = (grid_rows >= 0) & (grid_rows < local_height) & (grid_cols >= 0) & (grid_cols < local_width)
+        local_grid[grid_rows[mask], grid_cols[mask]] = 100
+        
+        # D. Call Standard Loop Helper for the local ROI
+        local_inflated = inflate_obstacles(
+            'Local', 'c++',
+            local_grid, self.local_inf_radius, self.occ_threshold,
+            False,          # Don't treat unknown as obstacle for live scans
+            self.local_inf_weight
+        )
 
-                        if dist <= self.local_inf_radius:
-                            penalty = self.local_inf_weight * (1.0 - (dist / self.local_inf_radius))
-                            cost_map[rr, cc] = max(cost_map[rr, cc], penalty)
+        # E. Maximum-Blend: Patch the local costs back into the base map
+        cost_map[r0:r1, c0:c1] = np.maximum(cost_map[r0:r1, c0:c1], local_inflated)
 
+
+    def _compute_path(self, cost_map: np.ndarray, info: MapMetaData) -> list[tuple[float, float]] | None:
+        """
+        Runs A* search and applies trajectory smoothing.
+        Returns a list of smoothed (wx, wy) coordinates.
+        """
         # ----------------------------------------------------
         # 3: Setup A* Search
         # ----------------------------------------------------
@@ -327,15 +389,15 @@ class PlannerNode(Node):
 
         if dist_to_goal < self.goal_tolerance:
             self.get_logger().info('Goal reached! Planner going to sleep.', once=True)
-            return
+            return None
+
+        # Check map boundaries
         if not (0 <= start[0] < info.height and 0 <= start[1] < info.width):
             self._log_failure('robot outside map bounds')
-            self._publish_empty_path()
-            return
+            return None
         if not (0 <= goal[0] < info.height and 0 <= goal[1] < info.width):
             self._log_failure('goal outside map bounds')
-            self._publish_empty_path()
-            return
+            return None
 
         # clear inflation halos around start and goal so A* doesn't get trapped
         self._clear_inf_halo(cost_map, start, self.local_inf_radius)
@@ -346,59 +408,64 @@ class PlannerNode(Node):
 
         # pass combined cost_map into A*
         path_cells = astar_search(cost_map, start, goal, epsilon=self.epsilon)
-        
         if path_cells is None:
             self._log_failure('no path found')
-            self._publish_empty_path()
-            return
+            return None
 
         self.consecutive_failures = 0
-
+        
         # ----------------------------------------------------
         # 4: Convert and Smooth A* Path
         # ----------------------------------------------------
-        world_path = []
-        for (r, c) in path_cells:
-            wx, wy = self._cell_to_world(r, c, info)
-            world_path.append((wx, wy))
-
+        world_path = [self._cell_to_world(r, c, info) for (r, c) in path_cells]
+        
         # smooth the trajectory
-        smoothed_world_path = self._smooth_path(
+        return self._smooth_path(
             world_path,
-            data_weight=self.data_weight,
-            smooth_weight=self.smooth_weight,
-            goal_smooth_dist=self.smooth_dist,
-            tolerance=self.smooth_tol
+            cost_map,
+            self.data_weight, 
+            self.smooth_weight, 
+            self.smooth_dist, 
+            self.smooth_tol
         )
 
+
+    def _publish_path(self, smoothed_path: list[tuple[float, float]]):
+        """
+        Constructs and publishes the Path message.
+        """
         # ----------------------------------------------------
         # 5: Publish Smoothed Nav Path
         # ----------------------------------------------------
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
         path_msg.header.frame_id = self.map_frame
-
+        
         # identity orientation for all waypoints — controller handles heading.
         q = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-
+        
         # publish the smoothed points
-        poses_list : list[PoseStamped] = []
-        for (wx, wy) in smoothed_world_path:
+        poses_list = []
+        for (wx, wy) in smoothed_path:
             ps = PoseStamped()
             ps.header.frame_id = self.map_frame
             ps.pose.position.x = wx
             ps.pose.position.y = wy
             ps.pose.orientation = q
             poses_list.append(ps)
-
-        if len(poses_list) > 0:
+        
+        if poses_list:
             poses_list[-1].pose.position.x = self.goal_x
             poses_list[-1].pose.position.y = self.goal_y
-
+            
         path_msg.poses = poses_list
-
         self.path_pub.publish(path_msg)
 
+
+    def _visualize_costmap(self, cost_map: np.ndarray, info: MapMetaData):
+        """
+        Visualizes the active costmap for debugging in RViz.
+        """
         # ----------------------------------------------------
         # 6: Visualise the Costmap in RViz
         # ----------------------------------------------------
@@ -415,10 +482,12 @@ class PlannerNode(Node):
             vis_grid[gradient_mask] = np.clip((cost_map[gradient_mask] / max_cost) * 98 + 1, 1, 99).astype(np.int8)
 
         costmap_msg = OccupancyGridMsg()
-        costmap_msg.header = path_msg.header
+        costmap_msg.header.stamp = self.get_clock().now().to_msg()
+        costmap_msg.header.frame_id = self.map_frame
         costmap_msg.info = info
         costmap_msg.data = vis_grid.flatten().tolist()
         self.costmap_pub.publish(costmap_msg)
+
 
     def _publish_reachable_debug(self, cost_map: np.ndarray, start: tuple[int, int], info):
         """
@@ -454,7 +523,8 @@ class PlannerNode(Node):
         msg.data = debug.flatten().tolist()
         self.reachable_pub.publish(msg)
 
-    def _smooth_path(self, path: list[tuple[float, float]], data_weight: float, smooth_weight: float, goal_smooth_dist: float = 2.0, tolerance: float = 0.01):
+
+    def _smooth_path(self, path: list[tuple[float, float]], cost_map: np.ndarray, data_weight: float, smooth_weight: float, goal_smooth_dist: float = 2.0, tolerance: float = 0.01):
         """
         Gradient descent path smoothing.
 
@@ -468,26 +538,63 @@ class PlannerNode(Node):
         Returns:
             list[tuple[float, float]]: The smoothed trajectory.
         """
-        if len(path) <= goal_smooth_dist:
-            return path
+        # Mathematical safety check to prevent IndexErrors
+        if len(path) < 3:
+            return list(path)
+        
+        #  Early exit using actual physical distance (meters), fixing the unit bug
+        path_distance = np.hypot(path[-1][0] - path[0][0], path[-1][1] - path[0][1])
+        if path_distance <= goal_smooth_dist:
+            return list(path)
         
         new_path = [list(p) for p in path]
         original_path = [list(p) for p in path]
         change = tolerance
+
+        iterations = 0
+        max_iterations = 1000
         
-        while change >= tolerance:
+        while change >= tolerance and iterations < max_iterations:
             change = 0.0
             for i in range(1, len(path) - 1): # Don't move start or goal points
+
+                # Dynamic Tension: Calculate physical distance from current node to the goal
+                d_to_goal = np.hypot(original_path[-1][0] - new_path[i][0], original_path[-1][1] - new_path[i][1])
+                
+                # Relax smoothing tension near the goal to prevent pulling paths into adjacent walls
+                curr_smooth = smooth_weight * (d_to_goal / goal_smooth_dist) if d_to_goal < goal_smooth_dist else smooth_weight
+
                 for j in range(2):            # Iterate over x and y
                     aux = new_path[i][j]
                     
-                    # Apply data and smoothing forces
-                    new_path[i][j] += data_weight * (original_path[i][j] - new_path[i][j]) + \
-                                      smooth_weight * (new_path[i-1][j] + new_path[i+1][j] - 2.0 * new_path[i][j])
+                    # Apply data alignment force and dynamic structural smoothness force
+                    smoothed_val = aux + data_weight * (original_path[i][j] - aux) + \
+                                   curr_smooth * (new_path[i-1][j] + new_path[i+1][j] - 2.0 * aux)
                     
-                    change += abs(aux - new_path[i][j])
+                    # Collision check integration
+                    temp_pose = list(new_path[i])
+                    temp_pose[j] = smoothed_val
+                    
+                    # Convert to pixel indices, check safety against costmap
+                    mx = int((temp_pose[0] - self.global_map_info.origin.position.x) / self.global_map_info.resolution)
+                    my = int((temp_pose[1] - self.global_map_info.origin.position.y) / self.global_map_info.resolution)
+                    
+                    if 0 <= my < cost_map.shape[0] and 0 <= mx < cost_map.shape[1]:
+                        if cost_map[my, mx] != np.inf:
+                            # Safe to move
+                            new_path[i][j] = smoothed_val
+                            change += abs(aux - smoothed_val)
+                        else:
+                            # Revert to original safe A* layout if it hits an infinite-cost wall
+                            new_path[i][j] = original_path[i][j]
+                    else:
+                        # Out of map bounds, revert
+                        new_path[i][j] = original_path[i][j]
+            
+            iterations += 1
                     
         return [(p[0], p[1]) for p in new_path]
+
 
     def _publish_empty_path(self):
         """
@@ -497,6 +604,7 @@ class PlannerNode(Node):
         empty.header.stamp = self.get_clock().now().to_msg()
         empty.header.frame_id = self.map_frame
         self.path_pub.publish(empty)
+
 
     def _log_failure(self, reason: str):
         """
@@ -510,6 +618,7 @@ class PlannerNode(Node):
         if self.consecutive_failures == 1 or self.consecutive_failures % 10 == 0:
             self.get_logger().warn(
                 f'Planner: {reason} (failure #{self.consecutive_failures})')
+
 
 
 def main(args=None):
