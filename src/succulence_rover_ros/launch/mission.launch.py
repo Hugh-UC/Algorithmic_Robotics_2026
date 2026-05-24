@@ -150,11 +150,19 @@ def generate_launch_description():
             ],
             output='screen',
         ),
-
+        # 1. SLAM Estimator Node (The Brain)
         Node(
             package='succulence_rover_ros',
-            executable='slam_node',
-            name='slam_node',
+            executable='slam_estimator_node',
+            name='slam_estimator',
+            output='screen',
+            parameters=[params_file],
+        ),
+        # 2. Global Mapper Node (The Artist)
+        Node(
+            package='succulence_rover_ros',
+            executable='global_mapper_node',
+            name='global_mapper',
             output='screen',
             parameters=[params_file],
         ),

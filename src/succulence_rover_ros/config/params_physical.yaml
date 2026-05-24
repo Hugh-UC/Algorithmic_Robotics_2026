@@ -259,6 +259,13 @@ slam_node:
       resolution_y: 0.025
       resolution_theta: 0.02
 
+      # Multiplier for the first-pass coarse search step (relative to resolution).
+      # Larger: significantly faster search, but risks "skipping" the true peak
+      #   if the environment is too geometrically complex.
+      # Smaller: slower search (closer to brute-force), but more robust to
+      #   narrow correlation peaks. Recommended range: 2.0 to 6.0.
+      coarse_search_multiplier: 4.0
+
       # Minimum normalised correlation score for a scan-match to be
       # accepted as an edge.
       # Larger: stricter -> fewer false matches but the graph may starve
