@@ -141,7 +141,7 @@ or replace with `ssh ubuntu@[ipaddress]` for your own Turtlebot 4
 
 Password:
 ```bash
-turtlebot3
+turtlebot4
 ```
 In a new terminal in the web browser VS Code interface, open Rviz2 with the provided config file
 
