@@ -2,39 +2,58 @@
 
 ## ✅ Completed Architectural Upgrades
 
-### 1. Gradient Descent Path Smoothing (The "Drunk Driving" Fix)
+### 1. Asynchronous Decoupled SLAM Architecture (v2.0)
+* **The Problem:** The monolithic SLAM node caused significant pose estimation lag because graph optimisation and map rendering were blocking the main execution thread.
+* **The Solution:** Split the architecture into two distinct nodes:
+    * `SlamEstimator` (The Brain): Handles low-latency scan matching and pose graph management.
+    * `GlobalMapper` (The Artist): Handles high-latency map rendering (ray-tracing) in a separate thread.
+* **Benefit:** Eliminates pose "teleportation" and freezing. The robot never goes "blind" because the mapper performs atomic grid swaps only when new data is ready.
+
+### 2. Multiprocessing Backend Optimisation (v2.0)
+* **The Problem:** Python's Global Interpreter Lock (GIL) meant that even with standard threading, CPU-bound graph optimisation still blocked the Estimator's main thread, causing 8-second stutters.
+* **The Solution:** Migrated the `graph_optimiser` execution to a `multiprocessing.Process` worker. This forces the OS to schedule the heavy matrix math on a separate CPU core, keeping the main estimation loop running at high frequency regardless of graph complexity.
+
+### 3. Gradient Descent Path Smoothing (The "Drunk Driving" Fix)
 * **The Problem:** A* searches an 8-connected grid, resulting in extremely jagged paths consisting exclusively of straight lines and sharp 45° or 90° corners. When the path follower encountered these, the curvature-limited speed cap forced the robot to slam on the brakes.
 * **The Solution:** Implemented a gradient descent smoothing algorithm in `planner_node.py`. The A* waypoints are iteratively pulled into a smooth B-Spline-like curve. The Pure Pursuit controller can now maintain a high, constant velocity ($v$) all the way to the goal without stuttering.
 
-### 2. Weighted A* (High-Speed Planning)
+### 4. Weighted A* (High-Speed Planning)
 * **The Problem:** Exhaustive A* search was too slow to react to dynamic obstacles (like Kevin) in real-time.
 * **The Solution:** Artificially inflated the heuristic by multiplying it by a weight (`f = tentative_g + (epsilon * hscore)`). This transforms the search into Weighted A*, making it vastly greedier. The planner now runs in a fraction of the time, allowing us to hit a 5Hz replanning rate for instant reflex dodging.
 
-### 3. Dual Gradient Costmaps (Wall Hugging Fix)
+### 5. Dual Gradient Costmaps (Wall Hugging Fix)
 * **The Problem:** The original binary `inflate_obstacles` function created hard True/False walls, causing the robot to clip corners or refuse to plan through narrow doorways.
 * **The Solution:** Replaced boolean grids with float gradients. Walls are `np.inf`, but the surrounding inflation cells carry a decaying penalty cost. By injecting this into the A* `tentative_g` calculation, the robot naturally prefers to drive straight down the middle of hallways. Includes a toggleable Local Costmap for dynamic obstacle avoidance.
 
-### 4. Coarse-to-Fine Scan Matching
+### 6. Coarse-to-Fine Scan Matching
 * **The Problem:** The original `match()` function used an exhaustive, brute-force 3D grid search $(O(N^3))$ that consumed massive amounts of CPU.
 * **The Solution:** Rewrote the matcher to perform a "coarse" search with large steps to find the general peak, followed by a "fine" search strictly around that local peak. SLAM now runs flawlessly with significantly reduced computational overhead.
 
-### 5. Adaptive Pure Pursuit Lookahead
+### 7. Adaptive Pure Pursuit Lookahead
 * **The Problem:** The pure pursuit controller previously used a fixed lookahead distance. This caused the robot to either cut corners too sharply at high speeds or oscillate wildly in tight corridors.
 * **The Solution:** Mapped the lookahead distance dynamically to the robot's current linear velocity ($v$). At high speeds, the lookahead extends for smooth, sweeping arcs. As the robot brakes or navigates tight spaces, the lookahead dynamically shrinks to ensure strict path adherence and prevent wall collisions.
 
 ---
 
+<br>
+
 ## 🚀 Future Enhancements
 
-### 1. Dynamic Obstacle Tracking (Velocity Prediction)
+### 1. Dedicated Backend optimiser Node
+* **The Concept:** Move the graph optimisation logic entirely out of the `SlamEstimator` into a third, separate ROS 2 node.
+* **Why:** This achieves the ultimate professional separation of concerns. The `SlamEstimator` becomes a thin "front-end," while the `optimiser` functions as the "back-end." This allows for easier debugging of the graph, better serialization of factor graphs, and cleaner state management across the distributed system.
+
+<br>
+
+### 2. Dynamic Obstacle Tracking (Velocity Prediction)
 Currently, our Local Costmap treats Kevin as a static wall every time it refreshes. If we implement a basic Kalman Filter to track moving clusters in the laser scan, we could project Kevin's velocity vector and add a "forward penalty" to the costmap, allowing the robot to route *behind* him instead of just stopping in front of him.
 <br>
 
-### 2. Frontier Exploration (Auto-Mapping)
-Instead of relying on a hardcoded coordinate to drive to, we could write an exploration node that analyzes the SLAM occupancy grid, identifies "Frontiers" (the boundary between known free space and unknown space), and continuously publishes the nearest frontier as the new A* goal until the entire lab is mapped.
+### 3. Frontier Exploration (Auto-Mapping)
+Instead of relying on a hardcoded coordinate to drive to, we could write an exploration node that analyses the SLAM occupancy grid, identifies "Frontiers" (the boundary between known free space and unknown space), and continuously publishes the nearest frontier as the new A* goal until the entire lab is mapped.
 <br>
 
-### 3. Move Global Parameters into Global Definition
+### 4. Move Global Parameters into Global Definition
 **For Example:**
 ```yaml
 /**:
@@ -56,24 +75,24 @@ Instead of relying on a hardcoded coordinate to drive to, we could write an expl
 
 Essentially, any param that will always be the same between files (nodes), should be declared like this.
 I.e. if the both nodes depend on a same definition (e.g. 'occupancy_grid.resolution') and the code requires
-these deifintions to be the same (or atleast highly preferable) they should be made into global parameters,
-to reduce declaration redundancies and making parameter tweeking simpler.
+these definitions to be the same (or atleast highly preferable) they should be made into global parameters,
+to reduce declaration redundancies and making parameter tweaking simpler.
 <br>
 
-### 4. Robust Loss Functions (M-Estimators)
-**The Problem:** The current pose graph optimizer uses standard Non-Linear Least Squares (Gauss-Newton). Because the error is squared, a single massive outlier (e.g., a false-positive scan match caused by a human walking past the Lidar) has a disproportionately large pull on the graph, which can warp the map.
+### 5. Robust Loss Functions (M-Estimators)
+**The Problem:** The current pose graph optimiser uses standard Non-Linear Least Squares (Gauss-Newton). Because the error is squared, a single massive outlier (e.g., a false-positive scan match caused by a human walking past the Lidar) has a disproportionately large pull on the graph, which can warp the map.
 **The Solution:** Implement a Robust M-Estimator (such as the Huber or Cauchy loss function) to mathematically inoculate the pose graph against catastrophic failure.
 
 **Implementation Steps:**
-1. Update `graph_optimizer.py` to intercept the raw error residuals before they are squared.
+1. Update `graph_optimiser.py` to intercept the raw error residuals before they are squared.
 2. Define a threshold parameter (`tuning_k`) in `params.yaml` to distinguish between normal noise and statistical outliers.
 3. Implement the Huber piecewise function: If the error is less than `tuning_k`, apply standard quadratic scaling. If it exceeds `tuning_k`, scale the penalty linearly.
 4. Down-weight the Information Matrix ($\Omega$) for outlier edges during the Hessian assembly step.
 <br>
 
-### 5. Levenberg-Marquardt (LM) Optimization
+### 6. Levenberg-Marquardt (LM) Optimisation
 **The Problem:** In featureless environments (like long, blank corridors), the Lidar cannot determine forward motion. Mathematically, this causes the Hessian matrix ($H$) to become singular or ill-conditioned. If Gauss-Newton attempts to invert it, the math "explodes," causing the robot to jump off the map.
-**The Solution:** Upgrade the graph optimizer from Gauss-Newton to the Levenberg-Marquardt algorithm to guarantee mathematical stability in degenerate environments.
+**The Solution:** Upgrade the graph optimiser from Gauss-Newton to the Levenberg-Marquardt algorithm to guarantee mathematical stability in degenerate environments.
 
 **Implementation Steps:**
 1. Modify the linear solver equation from standard Gauss-Newton to the LM formulation: `delta_x = (H + lambda * I)^(-1) * b`.
@@ -81,7 +100,7 @@ to reduce declaration redundancies and making parameter tweeking simpler.
 3. Implement the control loop: Evaluate the new system error after a step. If the error drops, decrease `lambda` (acting like fast Gauss-Newton). If the error rises, increase `lambda` (smoothly transitioning into safe Gradient Descent).
 <br>
 
-### 6. Sub-Grid Quadratic Interpolation for Scan Matching
+### 7. Sub-Grid Quadratic Interpolation for Scan Matching
 **The Problem:** The correlative scan matcher evaluates scores on a discrete grid (currently `0.025m`). The SLAM accuracy is mathematically bottlenecked by this cell size, preventing sub-centimeter localization without exponentially increasing CPU load.
 **The Solution:** Achieve millimeter-level accuracy on a coarse grid using Taylor Expansion and 2D surface fitting.
 
@@ -92,7 +111,7 @@ to reduce declaration redundancies and making parameter tweeking simpler.
 4. Calculate the first derivatives of the surface equation and set them to zero to find the exact continuous mathematical peak, yielding sub-pixel `x` and `y` offsets.
 <br>
 
-### 7. Eigenvalue-Driven Dynamic Covariance
+### 8. Eigenvalue-Driven Dynamic Covariance
 **The Problem:** Currently, the `map_match_weight` applies a static, circular covariance to scan-to-map matches. In a straight hallway, the robot is highly certain of its lateral distance to the walls, but highly uncertain of its forward progress, meaning a circular covariance is mathematically incorrect.
 **The Solution:** Dynamically stretch the covariance ellipse based on the geometry of the surrounding environment.
 
@@ -100,10 +119,10 @@ to reduce declaration redundancies and making parameter tweeking simpler.
 1. After a scan match completes, extract the 3x3 Hessian matrix of the score surface.
 2. Calculate the eigenvalues and eigenvectors of the Hessian.
 3. Identify degenerate dimensions (e.g., an eigenvalue near zero indicates a featureless direction like a hallway vector).
-4. Dynamically scale the Information Matrix along these specific eigenvectors, forcing the optimizer to trust wheel odometry for forward translation while strictly trusting the Lidar for lateral/rotational alignment.
+4. Dynamically scale the Information Matrix along these specific eigenvectors, forcing the optimiser to trust wheel odometry for forward translation while strictly trusting the Lidar for lateral/rotational alignment.
 <br>
 
-### 8. Multi-Resolution Branch and Bound (B&B) Search
+### 9. Multi-Resolution Branch and Bound (B&B) Search
 **The Problem:** The current "Coarse-to-Fine" search is a heuristic. If the true optimal alignment lies inside a very sharp, narrow mathematical peak, the coarse step might step completely over it, forcing the fine step to optimize the wrong local minimum.
 **The Solution:** Implement a Branch and Bound search algorithm to mathematically guarantee finding the absolute global optimum while remaining computationally faster than brute-force methods.
 
