@@ -29,12 +29,13 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            # Week 5: Dead reckoning + occupancy grid mapping
+            # Dead reckoning + occupancy grid mapping
             'motion_model_node = succulence_rover_ros.motion_model:main',
             'occupancy_grid_mapper_node = succulence_rover_ros.occupancy_grid_mapper:main',
-            # Week 11: Pose graph SLAM
-            'slam_node = succulence_rover_ros.slam_node:main',
-            # Week 12: A* planner + pure-pursuit navigator
+            # Split Pose Graph SLAM Nodes (New Architecture)
+            'slam_estimator_node = succulence_rover_ros.slam_estimator:main',
+            'global_mapper_node = succulence_rover_ros.global_mapper:main',
+            # A* planner + pure-pursuit navigator
             'planner_node = succulence_rover_ros.planner_node:main',
             'navigator_node = succulence_rover_ros.navigator_node:main',
         ],
