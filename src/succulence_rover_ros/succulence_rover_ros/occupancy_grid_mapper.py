@@ -89,6 +89,9 @@ class OccupancyGrid:
                  log_odds_min: float,
                  max_range: float,
                  min_range: float,
+                 edge_trim_degrees: float,
+                 edge_buffer_degrees: float,
+                 edge_min_weight: float,
                  lidar_x_offset: float,
                  lidar_y_offset: float,
                  lidar_yaw_offset: float):
@@ -99,10 +102,15 @@ class OccupancyGrid:
         self.origin_y   = origin_y
 
         # Convert probability parameters to log-odds for the update rule
-        self.log_odds_occ : float   = probability_to_log_odds(log_odds_occupied)
-        self.log_odds_free : float  = probability_to_log_odds(log_odds_free)
+        self.log_odds_occ : float   = float(probability_to_log_odds(log_odds_occupied))
+        self.log_odds_free : float  = float(probability_to_log_odds(log_odds_free))
         self.log_odds_max : float   = log_odds_max
         self.log_odds_min : float   = log_odds_min
+
+        self.edge_trim_rad          = np.radians(edge_trim_degrees) 
+        self.edge_buffer_rad        = np.radians(edge_buffer_degrees)
+        self.edge_min_weight        = edge_min_weight
+        self.fov_half_rad           = np.radians(135.0)
 
         self.max_range = max_range
         self.min_range = min_range
@@ -234,71 +242,86 @@ class OccupancyGrid:
     def update(self, pose: np.ndarray, ranges: np.ndarray,
                angle_min: float, angle_increment: float):
         """
-        Update occupancy grid with a laser scan.
-
-        For each laser beam:
-          1. Compute where the beam hit in the world
-          2. Ray-trace from the robot to the hit point
-          3. Mark cells along the ray as FREE (decrease log-odds)
-          4. Mark the endpoint as OCCUPIED (increase log-odds)
+        Update the occupancy grid based on the robot's pose and laser scan data.
 
         Args:
-            pose:            Robot pose [x, y, theta] in world frame
-            ranges:          Laser scan ranges in metres
-            angle_min:       Start angle of the scan (radians)
-            angle_increment: Angular step between beams (radians)
+            pose (np.ndarray): _description_
+            ranges (np.ndarray): _description_
+            angle_min (float): _description_
+            angle_increment (float): _description_
         """
         robot_x, robot_y, robot_theta = pose
 
-        # Compute lidar position in world frame (apply mounting offset)
-        c_r = np.cos(robot_theta)
-        s_r = np.sin(robot_theta)
-
+        # 1. Lidar Pose
+        c_r, s_r = np.cos(robot_theta), np.sin(robot_theta)
         lidar_x = robot_x + c_r * self.lidar_x_offset - s_r * self.lidar_y_offset
         lidar_y = robot_y + s_r * self.lidar_x_offset + c_r * self.lidar_y_offset
-
-        # Lidar position in grid coordinates
+        
         robot_row, robot_col = self.world_to_grid(lidar_x, lidar_y)
 
         if not self.is_valid_cell(robot_row, robot_col):
-            return  # Robot outside grid
+            return
 
-        # Process each laser beam
-        for i, r in enumerate(ranges):
-            # Skip invalid measurements
-            if np.isnan(r) or r < self.min_range or r > self.max_range:
+        # 2. Vectorized Math: Filter valid ranges
+        valid_mask = (~np.isnan(ranges)) & (ranges >= self.min_range) & (ranges <= self.max_range)
+        valid_indices = np.where(valid_mask)[0]
+        
+        if len(valid_indices) == 0:
+            return
+
+        valid_ranges = ranges[valid_indices]
+        
+        # 3. Vectorized Math: World Endpoints
+        beam_angles = robot_theta + self.lidar_yaw_offset + angle_min + valid_indices * angle_increment
+        end_x = lidar_x + valid_ranges * np.cos(beam_angles)
+        end_y = lidar_y + valid_ranges * np.sin(beam_angles)
+        
+        end_cols = ((end_x - self.origin_x) / self.resolution).astype(int)
+        end_rows = ((end_y - self.origin_y) / self.resolution).astype(int)
+
+        # 4. Vectorized Math: Trapezoidal Weights
+        local_angles = angle_min + valid_indices * angle_increment
+        norm_angles = (local_angles + np.pi) % (2 * np.pi) - np.pi
+        abs_angles = np.abs(norm_angles)
+        
+        weights = np.ones_like(valid_ranges)
+        
+        # Apply trim edge
+        trim_mask = abs_angles > (self.fov_half_rad - self.edge_trim_rad)
+        weights[trim_mask] = 0.0
+        
+        # Apply buffer taper
+        buffer_start = self.fov_half_rad - self.edge_trim_rad - self.edge_buffer_rad
+        buffer_mask = (abs_angles > buffer_start) & (~trim_mask)
+        if np.any(buffer_mask):
+            t = (abs_angles[buffer_mask] - buffer_start) / self.edge_buffer_rad
+            weights[buffer_mask] = 1.0 - (t * (1.0 - self.edge_min_weight))
+
+        # 5. Ray Trace Loop (Drastically simplified)
+        for i in range(len(valid_ranges)):
+            w = weights[i]
+            if w <= 0.0:
                 continue
+                
+            er, ec = end_rows[i], end_cols[i]
+            if not self.is_valid_cell(er, ec):
+                continue
+                
+            free_cells = self._ray_trace((robot_row, robot_col), (er, ec))
+            
+            # Apply Bayesian log-odds
+            for (r, c) in free_cells:
+                if self.is_valid_cell(r, c):
+                    self.grid[r, c] += self.log_odds_free * w
+                    self.grid[r, c] = max(self.grid[r, c], self.log_odds_min)
 
-            # Compute beam angle in world frame (including lidar yaw offset)
-            beam_angle = robot_theta + self.lidar_yaw_offset + (angle_min + i * angle_increment)
-
-            # Compute endpoint in world coordinates
-            end_x = lidar_x + r * np.cos(beam_angle)
-            end_y = lidar_y + r * np.sin(beam_angle)
-
-            # Convert to grid coordinates
-            end_row, end_col = self.world_to_grid(end_x, end_y)
-
-            if not self.is_valid_cell(end_row, end_col):
-                continue  # Endpoint outside grid
-
-            # Trace ray from robot to endpoint
-            free_cells = self._ray_trace((robot_row, robot_col), (end_row, end_col))
-
-            # Update free space cells
-            for (row, col) in free_cells:
-                if self.is_valid_cell(row, col):
-                    self.grid[row, col] += self.log_odds_free
-                    self.grid[row, col] = max(self.grid[row, col], self.log_odds_min)
-
-            # Update occupied endpoint
-            self.grid[end_row, end_col] += self.log_odds_occ
-            self.grid[end_row, end_col] = min(self.grid[end_row, end_col], self.log_odds_max)
+            self.grid[er, ec] += self.log_odds_occ * w
+            self.grid[er, ec] = min(self.grid[er, ec], self.log_odds_max)
 
     # ========================================================================
     # Provided helper methods (do not modify)
     # ========================================================================
-    def get_probability_grid(self) -> np.ndarray:
+    def get_probability_grid(self) -> np.ndarray | np.floating:
         """Convert log-odds grid to probability grid [0, 1]."""
         return log_odds_to_probability(self.grid)
 
@@ -369,6 +392,9 @@ class OccupancyGridMapperNode(Node):
             'occupancy_grid.log_odds_min': -100.0,
             'occupancy_grid.max_range': 3.5,
             'occupancy_grid.min_range': 0.1,
+            'occupancy_grid.edge_trim_degrees': 1.5,
+            'occupancy_grid.edge_buffer_degrees': 3.0,
+            'occupancy_grid.edge_min_weight': 0.1,
 
             'lidar.x_offset': 0.0,
             'lidar.y_offset': 0.0,
@@ -401,6 +427,9 @@ class OccupancyGridMapperNode(Node):
             log_odds_free=float(get_p('occupancy_grid.log_odds_free')),
             log_odds_max=float(get_p('occupancy_grid.log_odds_max')),
             log_odds_min=float(get_p('occupancy_grid.log_odds_min')),
+            edge_trim_degrees=float(get_p('occupancy_grid.edge_trim_degrees')),
+            edge_buffer_degrees=float(get_p('occupancy_grid.edge_buffer_degrees')),
+            edge_min_weight=float(get_p('occupancy_grid.edge_min_weight')),
             max_range=float(get_p('occupancy_grid.max_range')),
             min_range=float(get_p('occupancy_grid.min_range')),
             lidar_x_offset=float(get_p('lidar.x_offset')),

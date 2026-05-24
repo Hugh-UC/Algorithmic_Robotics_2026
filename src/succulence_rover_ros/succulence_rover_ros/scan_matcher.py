@@ -24,7 +24,8 @@ Usage: The ScanMatcher class is instantiated in the SLAM node and called
 """
 
 import numpy as np
-from typing import Tuple, Callable
+import math
+from typing import Tuple, Callable, List, Any, Dict
 from scipy.ndimage import maximum_filter
 
 
@@ -36,30 +37,44 @@ class ScanMatcher:
     and scoring each one using grid correlation.
     """
     def __init__(self,
-                 search_x: float,
-                 search_y: float,
-                 search_theta: float,
-                 resolution_x: float,
-                 resolution_y: float,
-                 resolution_theta: float,
-                 local_grid_size: int,
-                 local_grid_resolution: float,
-                 min_score: float):
-        self.search_x = search_x
-        self.search_y = search_y
-        self.search_theta = search_theta
-        self.resolution_x = resolution_x
-        self.resolution_y = resolution_y
-        self.resolution_theta = resolution_theta
-        self.local_grid_size = local_grid_size
-        self.local_grid_resolution = local_grid_resolution
-        self.min_score = min_score
+                 search_x : float,
+                 search_y : float,
+                 search_theta : float,
+                 resolution_x : float,
+                 resolution_y : float,
+                 resolution_theta : float,
+                 dilation_size : int,
+                 coarse_search_multiplier : float,
+                 local_grid_size : int,
+                 local_grid_resolution : float,
+                 min_score : float,
+                 edge_trim_degrees : float,
+                 edge_buffer_degrees : float,
+                 edge_min_weight : float,
+                 lidar_yaw_offset : float):
+        self.search_x                   = search_x
+        self.search_y                   = search_y
+        self.search_theta               = search_theta
+        self.resolution_x               = resolution_x
+        self.resolution_y               = resolution_y
+        self.resolution_theta           = resolution_theta
+        self.dilation_size              = dilation_size
+        self.coarse_search_multiplier   = coarse_search_multiplier
+        self.local_grid_size            = local_grid_size
+        self.local_grid_resolution      = local_grid_resolution
+        self.min_score                  = min_score
+
+        self.edge_trim_rad              = np.radians(edge_trim_degrees)
+        self.edge_buffer_rad            = np.radians(edge_buffer_degrees)
+        self.edge_min_weight            = edge_min_weight
+        self.lidar_yaw_offset           = lidar_yaw_offset
+        self.fov_half_rad               = np.radians(135.0)             # Assume 270 degree FOV
 
 
     # ========================================================================
     # Build Local Occupancy Grid
     # ========================================================================
-    def _build_local_grid(self, scan_points: np.ndarray) -> np.ndarray:
+    def _build_local_grid(self, scan_points : np.ndarray) -> np.ndarray:
         """
         Rasterise scan points into a local occupancy grid for fast correlation.
 
@@ -71,7 +86,7 @@ class ScanMatcher:
             scan_points: Nx2 array of (x, y) points in local frame
 
         Returns:
-            2D float32 grid (1.0 where scan points land, 0.0 elsewhere)
+            np.ndarray: 2D float32 grid (1.0 where scan points land, 0.0 elsewhere)
 
         Algorithm:
             1. grid = zeros(local_grid_size x local_grid_size)
@@ -94,8 +109,8 @@ class ScanMatcher:
         # Vetorised version:
         if len(scan_points) > 0:
             # Vectorised conversion to grid coordinates
-            cols = (scan_points[:, 0] / self.local_grid_resolution).astype(int) + offset
-            rows = (scan_points[:, 1] / self.local_grid_resolution).astype(int) + offset
+            cols = np.floor(scan_points[:, 0] / self.local_grid_resolution).astype(int) + offset
+            rows = np.floor(scan_points[:, 1] / self.local_grid_resolution).astype(int) + offset
 
             # Create a mask for points that fall within the grid bounds
             valid_mask = (rows >= 0) & (rows < self.local_grid_size) & \
@@ -115,7 +130,7 @@ class ScanMatcher:
         '''
 
         # Dilate for tolerance (1 cell radius → 3x3 maximum filter)
-        grid = maximum_filter(grid, size=3)
+        grid = maximum_filter(grid, size=self.dilation_size)
 
         return grid
 
@@ -123,7 +138,7 @@ class ScanMatcher:
     # ========================================================================
     # Score Alignment
     # ========================================================================
-    def _score_alignment(self, grid: np.ndarray, scan_points: np.ndarray, pose: np.ndarray) -> float:
+    def _score_alignment(self, grid : np.ndarray, scan_points : np.ndarray, pose : np.ndarray) -> float:
         """
         Score how well scan_points align with the reference grid
         when transformed by the candidate pose.
@@ -167,24 +182,29 @@ class ScanMatcher:
         
         # Convert to grid coordinates
         offset = self.local_grid_size // 2
-        cols = (px_prime / self.local_grid_resolution).astype(int) + offset
-        rows = (py_prime / self.local_grid_resolution).astype(int) + offset
+
+        cols = np.floor(px_prime / self.local_grid_resolution).astype(int) + offset
+        rows = np.floor(py_prime / self.local_grid_resolution).astype(int) + offset
         
         # Find points within the grid bounds
         valid_mask = (rows >= 0) & (rows < self.local_grid_size) & \
                      (cols >= 0) & (cols < self.local_grid_size)
         
         # Count valid points in occupied cell (> 0)
-        hits = grid[rows[valid_mask], cols[valid_mask]] > 0
+        # hits = grid[rows[valid_mask], cols[valid_mask]] > 0
+        hits = np.greater(grid[rows[valid_mask], cols[valid_mask]], 0.0)
+
+        # Determine angle of valid points in local sensor frame for weighting
+        beam_angles = np.arctan2(scan_points[valid_mask, 1], scan_points[valid_mask, 0]) - self.lidar_yaw_offset
+        weights = np.array([self._get_beam_weight(a) for a in beam_angles])
         
-        # Return total score
-        return float(np.sum(hits))
+        return float(np.sum(hits.astype(float) * weights))
 
 
     # ========================================================================
     # Universal Searcher (scan-to-scan and scan-to-map)
     # ========================================================================
-    def _coarse_to_fine_search(self, score_fn: Callable[[np.ndarray], float], initial_guess: np.ndarray) -> Tuple[np.ndarray, dict, Tuple[int, int, int], float]:
+    def _coarse_to_fine_search(self, score_fn : Callable[[np.ndarray], float], initial_guess : np.ndarray) -> Tuple[np.ndarray, dict, Tuple[int, int, int], float]:
         """
         Universal Coarse-to-Fine grid search.
 
@@ -195,12 +215,27 @@ class ScanMatcher:
         Returns:
             Tuple[np.ndarray, dict, Tuple[int, int, int], float]: _description_
         """
-        # --- phase 1 | coarse ---
-        cx_step, cy_step, ct_step = self.resolution_x * 4.0, self.resolution_y * 4.0, self.resolution_theta * 4.0
+        # retrieve course search multiplier
+        m = self.coarse_search_multiplier
         
-        cx_vals = np.arange(-self.search_x, self.search_x + 1e-6, cx_step)
-        cy_vals = np.arange(-self.search_y, self.search_y + 1e-6, cy_step)
-        ct_vals = np.arange(-self.search_theta, self.search_theta + 1e-6, ct_step)
+        # --- phase 1 | coarse ---
+        cx_step, cy_step, ct_step = self.resolution_x * m, self.resolution_y * m, self.resolution_theta * m
+
+        # Symmetric grid generation logic (replaces left-right asymetric generation with start at zero))
+        def get_symmetric_grid(search_max : float, step : float) -> np.ndarray:
+            # Calculate the number of steps needed to cover the search range
+            num_steps = math.ceil(search_max / step)
+
+            # Generate a symmetric grid around zero
+            grid = np.arange(-num_steps, num_steps + 1) * step
+
+            # Clip to ensure we don't search outside the user-defined window
+            return np.unique(np.clip(grid, -search_max, search_max))
+
+        
+        cx_vals = get_symmetric_grid(self.search_x, cx_step)
+        cy_vals = get_symmetric_grid(self.search_y, cy_step)
+        ct_vals = get_symmetric_grid(self.search_theta, ct_step)
 
         best_coarse_score = -1.0
         best_coarse_offset = np.zeros(3)
@@ -216,9 +251,11 @@ class ScanMatcher:
 
         # --- phase 2 | fine ---
         fine_center = initial_guess + best_coarse_offset
-        fx_vals = np.arange(-cx_step, cx_step + 1e-6, self.resolution_x)
-        fy_vals = np.arange(-cy_step, cy_step + 1e-6, self.resolution_y)
-        ft_vals = np.arange(-ct_step, ct_step + 1e-6, self.resolution_theta)
+
+        # Symmetric fine grid generation around the coarse peak
+        fx_vals = get_symmetric_grid(cx_step, self.resolution_x)
+        fy_vals = get_symmetric_grid(cy_step, self.resolution_y)
+        ft_vals = get_symmetric_grid(ct_step, self.resolution_theta)
 
         scores = {}
         best_fine_score = -1.0
@@ -240,7 +277,7 @@ class ScanMatcher:
     # ========================================================================
     # Scan-to-Scan Matching
     # ========================================================================
-    def match(self, scan_ref: np.ndarray, scan_new: np.ndarray, initial_guess: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
+    def match(self, scan_ref : np.ndarray, scan_new : np.ndarray, initial_guess : np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
         """
         Match two scans using correlation-based grid search.
 
@@ -273,6 +310,8 @@ class ScanMatcher:
             6. covariance = _estimate_covariance_from_hessian(scores, best_idx, ...)
             7. Return (best_pose, covariance, normalised_score)
         """
+        # Default covariance set to low confidence, for Pose Graph SLAM.
+        # old covariance ('np.diag([0.1, 0.1, 0.05])') was for a local-only system.
         default_cov = np.diag([0.1, 0.1, 0.05])
 
         if len(scan_ref) == 0 or len(scan_new) == 0:
@@ -282,7 +321,7 @@ class ScanMatcher:
         ref_grid = self._build_local_grid(scan_ref)
 
         # Step 2: Create lambda wrapper to pass scoring method
-        score_fn = lambda pose: self._score_alignment(ref_grid, scan_new, pose)
+        score_fn = lambda pose : self._score_alignment(ref_grid, scan_new, pose)
 
         # Step 3: Coarse-to-fine search over candidate poses
         best_pose, scores, best_idx, best_score = self._coarse_to_fine_search(score_fn, initial_guess)
@@ -300,11 +339,11 @@ class ScanMatcher:
 
         return best_pose, covariance, normalised_score
 
+
     # ========================================================================
     # Scan-to-Map Matching (Extension)
     # ========================================================================
-    def match_to_map(self, global_grid: np.ndarray, map_origin_x: float, map_origin_y: float, map_resolution: float,
-                     scan_new: np.ndarray, initial_guess_global: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
+    def match_to_map(self, occupancy_grid : Any, scan_new : np.ndarray, initial_guess_global : np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
         """
         Aligns a live scan against the global SLAM occupancy grid.
 
@@ -319,28 +358,23 @@ class ScanMatcher:
         Returns:
             Tuple[np.ndarray, np.ndarray, float]: _description_
         """
+        # Default covariance set to low confidence, for Pose Graph SLAM.
         default_cov = np.diag([0.1, 0.1, 0.05])
+
         if len(scan_new) == 0:
             return initial_guess_global.copy(), default_cov, 0.0
+        
+        # Dilate global grid to create catchable score surface.
+        dilated_grid = self._prepare_global_surface(occupancy_grid.grid)
 
-        # Step 1: Define specific scoring rules for global scan-to-map using real-world coordinates
-        def score_global(pose: np.ndarray) -> float:
-            c, s = np.cos(pose[2]), np.sin(pose[2])
-
-            # rotate and translate points into global map frame
-            px_prime = c * scan_new[:, 0] - s * scan_new[:, 1] + pose[0]
-            py_prime = s * scan_new[:, 0] + c * scan_new[:, 1] + pose[1]
-            
-            cols = ((px_prime - map_origin_x) / map_resolution).astype(int)
-            rows = ((py_prime - map_origin_y) / map_resolution).astype(int)
-            
-            h, w = global_grid.shape
-            valid = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
-            hits = global_grid[rows[valid], cols[valid]] > 0
-            return float(np.sum(hits))
+        # Pass the prepped surface and grid info to the score function
+        score_fn = lambda pose: self._score_global_surface(
+            pose, scan_new, dilated_grid, 
+            occupancy_grid.origin_x, occupancy_grid.origin_y, occupancy_grid.resolution
+        )
 
         # Step 2: Perform coarse-to-fine search
-        best_pose, scores, best_idx, best_score = self._coarse_to_fine_search(score_global, initial_guess_global)
+        best_pose, scores, best_idx, best_score = self._coarse_to_fine_search(score_fn, initial_guess_global)
 
         # Step 3: Normalise score and check against threshold
         normalised_score = best_score / len(scan_new)
@@ -355,15 +389,64 @@ class ScanMatcher:
         return best_pose, cov, normalised_score
     
 
+    def _prepare_global_surface(self, grid: np.ndarray) -> np.ndarray:
+        """
+        Dilates the global grid to create a catchable score surface.
+
+        Args:
+            grid (np.ndarray): Raw occupancy grid.
+
+        Returns:
+            np.ndarray: Dilated grid surface.
+        """
+        return maximum_filter((grid > 0).astype(np.float32), size=self.dilation_size)
+
+
+    def _score_global_surface(self, pose : np.ndarray, scan_new: np.ndarray, dilated_grid : np.ndarray, 
+                              ox : float, oy : float, res : float) -> float:
+        """
+        Calculates score using the passed global grid parameters.
+
+        Args:
+            pose (np.ndarray): Candidate global pose.
+            scan_new (np.ndarray): Nx2 array of scan points.
+            dilated_grid (np.ndarray): The dilated reference surface.
+            ox (float): Map origin x.
+            oy (float): Map origin y.
+            res (float): Map resolution.
+
+        Returns:
+            float: Correlation score.
+        """
+        c, s = np.cos(pose[2]), np.sin(pose[2])
+
+        # rotate and translate points into global map frame
+        px_prime = c * scan_new[:, 0] - s * scan_new[:, 1] + pose[0]
+        py_prime = s * scan_new[:, 0] + c * scan_new[:, 1] + pose[1]
+        
+        cols = np.floor((px_prime - ox) / res).astype(int)
+        rows = np.floor((py_prime - oy) / res).astype(int)
+        
+        h, w = dilated_grid.shape
+        valid = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+        # hits = dilated_grid[rows[valid], cols[valid]] > 0
+        hits = np.greater(dilated_grid[rows[valid], cols[valid]], 0.0)
+
+        beam_angles = np.arctan2(scan_new[valid, 1], scan_new[valid, 0]) - self.lidar_yaw_offset
+        weights = np.array([self._get_beam_weight(a) for a in beam_angles])
+
+        return float(np.sum(hits.astype(float) * weights))
+
+
     # ========================================================================
     # Estimate Covariance from Hessian
     # ========================================================================
     def _estimate_covariance_from_hessian(self,
-                                          scores: dict,
-                                          best_idx: Tuple[int, int, int],
-                                          step_x: float,
-                                          step_y: float,
-                                          step_theta: float) -> np.ndarray:
+                                          scores : dict,
+                                          best_idx : Tuple[int, int, int],
+                                          step_x : float,
+                                          step_y : float,
+                                          step_theta : float) -> np.ndarray:
         """
         Estimate match covariance from the Hessian of the score surface.
 
@@ -377,7 +460,8 @@ class ScanMatcher:
         Returns:
             3x3 covariance matrix
         """
-        default_cov = np.diag([0.1, 0.1, 0.05])
+        # Default covariance set to low confidence, for Pose Graph SLAM.
+        default_cov = np.diag([999.0, 999.0, 999.0])
 
         f0 = scores.get(best_idx, 0.0)
         if f0 == 0.0:
@@ -392,6 +476,11 @@ class ScanMatcher:
             idx_minus = list(best_idx)
             idx_plus[i] += 1
             idx_minus[i] -= 1
+
+            # Abort if the peak is on the boundary of our search array.
+            # If we hit the boundary, we don't have enough data to calculate curvature.
+            if tuple(idx_plus) not in scores or tuple(idx_minus) not in scores:
+                return default_cov
 
             f_plus = scores.get(tuple(idx_plus), 0.0)
             f_minus = scores.get(tuple(idx_minus), 0.0)
@@ -439,14 +528,45 @@ class ScanMatcher:
 
         return covariance
 
+    # ========================================================================
+    # Beam Weighting
+    # ========================================================================
+    def _get_beam_weight(self, angle: float) -> float:
+        """
+        Calculates beam weight using a trapezoidal decay profile.
+
+        Args:
+            angle (float): Beam angle relative to the forward direction (radians)
+
+        Returns:
+            float: Weight in [0, 1] for this beam, where 1.0 is full weight and 0.0 is ignored.
+        """
+        # Normalize angle to [-pi, pi]
+        norm_angle = (angle + np.pi) % (2 * np.pi) - np.pi
+        abs_angle = abs(norm_angle)
+
+        # Ignore beams outside the effective FOV (after edge trim)
+        if abs_angle > (self.fov_half_rad - self.edge_trim_rad):
+            return 0.0
+        
+        # Calculate start of buffer zone, where weights begin decaying
+        buffer_start = self.fov_half_rad - self.edge_trim_rad - self.edge_buffer_rad
+
+        # If beam is within buffer zone, calculate linearly decaying weight
+        if abs_angle > buffer_start:
+            t = (abs_angle - buffer_start) / self.edge_buffer_rad
+
+            return 1.0 - (t * (1.0 - self.edge_min_weight))
+        
+        return 1.0
 
 # ============================================================================
 # Helper function
 # ============================================================================
-def scans_from_ranges(ranges: np.ndarray, angle_min: float,
-                      angle_increment: float, min_range: float = 0.1,
-                      max_range: float = 12.0,
-                      lidar_yaw_offset: float = 0.0) -> np.ndarray:
+def scans_from_ranges(ranges : np.ndarray, angle_min : float,
+                      angle_increment : float, min_range : float = 0.1,
+                      max_range : float = 12.0,
+                      lidar_yaw_offset : float = 0.0) -> np.ndarray:
     """
     Convert laser scan ranges to (x, y) points in the robot's local frame.
 
