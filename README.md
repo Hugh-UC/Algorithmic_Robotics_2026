@@ -105,7 +105,7 @@ mkdir succulence_ws
 In the new workspace directory clone this github repo
 ```bash
 cd succulence_ws
-gh repo clone https://github.com/Hugh-UC/Algorithmic_Robotics_2026.git
+git clone https://github.com/Hugh-UC/Algorithmic_Robotics_2026.git
 ```
 
 <br>
