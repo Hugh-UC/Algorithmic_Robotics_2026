@@ -34,7 +34,7 @@ class GlobalMapperNode(Node):
             'keyframe_scan_topic': '/succulence/slam/keyframe_scan',
             'map_version_topic': '/succulence/slam/version',
 
-            'scan_buffer_max_size': 300,
+            'scan_buffer_max_size': 5000,
 
             'slam.map_publish_interval': 0.3,           # Fast refresh for physical safety
 
@@ -103,7 +103,10 @@ class GlobalMapperNode(Node):
 
         self.last_path_len = 0
         self.cached_poses = []
-        self.current_map_version = 0
+
+        self.target_map_version = 0
+        self.published_map_version = 0
+        self.latest_path_msg = None
 
         self.map_ready = False
 
@@ -128,7 +131,11 @@ class GlobalMapperNode(Node):
         """
         Updates the internal target version when the Estimator finishes optimizing.
         """
-        self.current_map_version = msg.data
+        self.target_map_version = msg.data
+        self.get_logger().info(f"Master optimisation v{self.target_map_version} received. Triggering map rebuild.")
+
+        if self.latest_path_msg is not None:
+             threading.Thread(target=self._rebuild_map, args=(self.latest_path_msg,), daemon=True).start()
 
 
     def _scan_cb(self, msg: LaserScan):
@@ -145,11 +152,14 @@ class GlobalMapperNode(Node):
             oldest_t = min(self.scan_buffer.keys())
             del self.scan_buffer[oldest_t]
 
+
     def _path_cb(self, msg: Path):
         """
         Handles incoming path updates. Triggers an incremental draw for new keyframes,
         or a full background rebuild if the graph was optimized (shifted).
         """
+        self.latest_path_msg = msg
+
         if not msg.poses:
             return
 
@@ -157,16 +167,6 @@ class GlobalMapperNode(Node):
 
         # 1. No change
         if current_len == self.last_path_len:
-            # Check for displacement, see if optimization shifted graph
-            max_disp = 0.0
-            if current_len > 0 and len(self.cached_poses) == current_len:
-                 # Check just the last node for speed; if it moved, the graph optimized
-                 dx = msg.poses[-1].pose.position.x - self.cached_poses[-1][0]
-                 dy = msg.poses[-1].pose.position.y - self.cached_poses[-1][1]
-                 max_disp = np.hypot(dx, dy)
-            
-            if max_disp > 0.01: # 1cm shift threshold
-                threading.Thread(target=self._rebuild_map, args=(msg,), daemon=True).start()
             return
 
         # 2. Incremental Addition (single new keyframe was added, no optimization yet)
@@ -217,6 +217,9 @@ class GlobalMapperNode(Node):
 
     def _rebuild_map(self, path_msg: Path):
         t0 = time.monotonic()
+
+        # Capture version thread is currently drawing
+        version_being_built = self.target_map_version
         
         # 1. Create an independent 'off-screen' mapper for the background thread
         bg_mapper = copy.deepcopy(self.occupancy_grid)
@@ -249,6 +252,7 @@ class GlobalMapperNode(Node):
         with self.rebuild_lock:
             self.occupancy_grid.grid = bg_mapper.grid
 
+            self.published_map_version = version_being_built
             self.map_ready = True
 
         n_known = int(np.sum(np.abs(self.occupancy_grid.grid) > 0.1))
@@ -269,7 +273,7 @@ class GlobalMapperNode(Node):
             self.map_pub.publish(map_msg)
 
         # Announce to Estimator that map version is ready
-        self.map_ack_pub.publish(Int32(data=self.current_map_version))
+        self.map_ack_pub.publish(Int32(data=self.published_map_version))
 
         n_known = int(np.sum(np.abs(self.occupancy_grid.grid) > 0.1))
 

@@ -477,7 +477,7 @@ class SlamEstimatorNode(Node):
 
             # 2. Safely swap drifting graph for newly solved graph
             for i in range(num_optimized_nodes):
-                self.pose_graph.nodes[i] = optimized_graph.nodes[i]
+                self.pose_graph.nodes[i] = optimized_graph.nodes[i].copy()
 
             # 3. Propagate correction delta to any new keyframes accumulated
             for i in range(num_optimized_nodes, len(self.pose_graph.nodes)):
@@ -489,14 +489,15 @@ class SlamEstimatorNode(Node):
             # 5. Apply correction delta to LIVE odometry
             self.current_odom_pose = utils.pose_compose(self.current_odom_pose, correction_delta)
             
-            # Increment map version and broadcast
-            self.optimization_version += 1
+            # 6. Publish the new path BEFORE triggering the Mapper's version ACK
+            self._publish_path()
 
+            # 7. Increment map version and broadcast
+            self.optimization_version += 1
             self.version_pub.publish(Int32(data=self.optimization_version))
-            
             self.get_logger().info(f'🏁 Optimisation merged successfully, took {duration:.2f}s')
             
-            # 4. Clean up
+            # 8. Clean up
             self.optimizing = False
             self.opt_timer.cancel()
 
