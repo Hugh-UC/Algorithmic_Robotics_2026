@@ -180,21 +180,21 @@ slam_estimator:
       #   that are more likely to saturate the search window.
       # Smaller: more keyframes -> denser graph, more CPU per optimisation
       #   pass, but tighter local constraints.
-      keyframe_distance: 0.1
+      keyframe_distance: 0.25
 
       # Rotation between keyframes, in radians.
       # Larger: fewer keyframes during turns -> heading drift accumulates
       #   between corrections.
       # Smaller: keyframes during sharp turns -> better corrected heading,
       #   higher CPU.
-      keyframe_angle: 0.1
+      keyframe_angle: 0.25
 
       # Run graph optimisation every N keyframes.
       # Larger: optimiser runs less often -> cheaper but the live map can
       #   show drift longer before snapping.
       # Smaller: optimiser runs more often -> tighter map but more CPU and
       #   more frequent visual snaps.
-      optimization_interval: 15            # **WORKING**: 5
+      optimization_interval: 50            # **WORKING**: 5
 
       # Gauss-Newton iterations per optimisation call.
       # Larger: more thorough convergence per call, more CPU per snap.
@@ -291,7 +291,7 @@ slam_estimator:
       #   for scan-match edges in feature-poor areas.
       # Smaller: more matches accepted -> more edges but more noise from
       #   spurious correlations.
-      min_score: 0.55
+      min_score: 0.50
 
       # Side length of the local rasterised grid used when scoring scans.
       # Larger: matches over a larger area -> better in open spaces, more
@@ -346,7 +346,14 @@ global_mapper:
       # Maximum number of laser scans to store in memory
       # Larger: can correlate against older scans, more robust to loop closures
       # Smaller: less memory usage, may lose the ability to close loops.
-      scan_buffer_max_size: 3000
+      scan_buffer_max_size: 10000
+
+      # Maximum number of keyframes to render per new optimisation.
+      # Larger: more complete map, but exponentially increasing CPU usage
+      #   during longer runs.
+      # Smaller: faster background map updates, but only the most recent portion
+      #   of the trajectory is shown in the map until a new optimisation occurs.
+      max_keyframe_render: 150
 
     # See motion_model.lidar above for offsets.
     lidar:
@@ -476,6 +483,7 @@ planner_node:
 navigator_node:
   ros__parameters:
     plan_topic: "/succulence/plan"
+    scan_topic: "/succulence/scan"          # physical: "/scan"
     odom_topic: "/succulence/slam/odometry"
     cmd_vel_topic: "/cmd_vel"
 
@@ -502,10 +510,10 @@ navigator_node:
       emergency_brake_dist: 0.12
       
       # Width of the safety field of view, in radians.
-      # 0.7 rad is approx 40 degrees (20 degrees left and right of center).
+      # 1.57 rad is approx 90 degrees (45 degrees left and right of center).
       # Larger: wider peripheral protection, but might trigger on walls during turns.
       # Smaller: narrow tunnel vision, risks clipping objects with the wheels/sides.
-      forward_cone_angle: 0.7
+      forward_cone_angle: 1.57
 
       # Maximum turn speed (rad/s) allowed during a soft collision recovery spin.
       # Low values ensure the robot doesn't swing its physical chassis into the object.

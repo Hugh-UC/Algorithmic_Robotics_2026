@@ -34,9 +34,9 @@ class GlobalMapperNode(Node):
             'keyframe_scan_topic': '/succulence/slam/keyframe_scan',
             'map_version_topic': '/succulence/slam/version',
 
-            'scan_buffer_max_size': 5000,
-
             'slam.map_publish_interval': 0.3,           # Fast refresh for physical safety
+            'slam.scan_buffer_max_size': 5000,          # Larger: more history for optimization, but more RAM usage.
+            'slam.max_keyframe_render': 50,             # Cap on keyframes rendered during background rebuild
 
             'occupancy_grid.resolution': 0.025,
             'occupancy_grid.width': 300,                # Physical 7.5m map
@@ -78,7 +78,8 @@ class GlobalMapperNode(Node):
         # Memory buffer for historical laser scans
         # Key: timestamp (seconds as float), Value: LaserScan message
         self.scan_buffer = {}
-        self.scan_buffer_max_size = int(get_p('scan_buffer_max_size'))
+        self.scan_buffer_max_size = int(get_p('slam.scan_buffer_max_size'))
+        self.max_keyframe_render = int(get_p('slam.max_keyframe_render'))
 
         # Init Grid Map (Use your params here)
         self.occupancy_grid = OccupancyGrid(
@@ -189,10 +190,6 @@ class GlobalMapperNode(Node):
                     angle_increment=scan_msg.angle_increment
                 )
 
-        # 3. Graph structural change (fallback rebuild)
-        elif current_len != self.last_path_len:
-             threading.Thread(target=self._rebuild_map, args=(msg,), daemon=True).start()
-
         self.last_path_len = current_len
         self.cached_poses = [[p.pose.position.x, p.pose.position.y] for p in msg.poses]
 
@@ -226,8 +223,10 @@ class GlobalMapperNode(Node):
         bg_mapper.grid.fill(0.0)
         
         # 2. Render all keyframes into the background grid using the Path message
+        poses_to_render = path_msg.poses[-self.max_keyframe_render:] if len(path_msg.poses) > self.max_keyframe_render else path_msg.poses  # Pose render limit
+
         n_rendered = 0
-        for pose_stamped in path_msg.poses:
+        for pose_stamped in poses_to_render:
             stamp_nanos = pose_stamped.header.stamp.sec * 1000000000 + pose_stamped.header.stamp.nanosec
 
             if stamp_nanos not in self.scan_buffer:

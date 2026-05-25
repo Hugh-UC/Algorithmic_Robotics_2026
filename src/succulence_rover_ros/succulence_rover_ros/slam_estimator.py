@@ -39,7 +39,7 @@ class SlamEstimatorNode(Node):
 
             'slam.keyframe_distance': 0.06,             # High density for physical speed
             'slam.keyframe_angle': 0.05,                # High density for physical slip
-            'slam.optimization_interval': 3,
+            'slam.optimization_interval': 10,
             'slam.num_iterations': 10,
             'slam.scan_match_cov_xy': 0.003,
             'slam.scan_match_cov_theta': 0.0015,
