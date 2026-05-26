@@ -121,14 +121,14 @@ occupancy_grid_mapper:
       #   faster but is more vulnerable to spurious reflections.
       # Smaller: needs more hits to commit — slower to learn but more
       #   robust to noise.
-      log_odds_occupied: 0.85
+      log_odds_occupied: 0.80         # 0.85
 
       # Log-odds decrement applied to cells a scan ray passes through
       # (observed free).
       # Larger: cells flip to "free" faster — clears stale obstacles
       #   quickly but may erase real ones briefly occluded.
       # Smaller: free space takes longer to mark — slower clearing.
-      log_odds_free: 0.4
+      log_odds_free: 0.48             # 0.4
 
       # Saturation clamp for the log-odds value of any cell.
       # Larger magnitude: cells become "very confident" and resist
@@ -174,33 +174,40 @@ slam_estimator:
     map_version_topic: "/succulence/slam/version"
 
     slam:
+      # Maximum number of keyframes to render per new optimisation.
+      # Larger: more complete map, but exponentially increasing CPU usage
+      #   during longer runs.
+      # Smaller: faster background map updates, but only the most recent portion
+      #   of the trajectory is shown in the map until a new optimisation occurs.
+      keyframe_window: 50
+
       # Translation between keyframes, in metres. A new keyframe is added
       # once the rover has moved this far since the last one.
       # Larger: fewer keyframes -> lighter graph, longer scan-match shifts
       #   that are more likely to saturate the search window.
       # Smaller: more keyframes -> denser graph, more CPU per optimisation
       #   pass, but tighter local constraints.
-      keyframe_distance: 0.25
+      keyframe_distance: 0.2
 
       # Rotation between keyframes, in radians.
       # Larger: fewer keyframes during turns -> heading drift accumulates
       #   between corrections.
       # Smaller: keyframes during sharp turns -> better corrected heading,
       #   higher CPU.
-      keyframe_angle: 0.25
+      keyframe_angle: 0.2            # 0.25
 
       # Run graph optimisation every N keyframes.
       # Larger: optimiser runs less often -> cheaper but the live map can
       #   show drift longer before snapping.
       # Smaller: optimiser runs more often -> tighter map but more CPU and
       #   more frequent visual snaps.
-      optimization_interval: 50            # **WORKING**: 5
+      optimization_interval: 15            # **WORKING**: 5
 
       # Gauss-Newton iterations per optimisation call.
       # Larger: more thorough convergence per call, more CPU per snap.
       # Smaller: cheaper but may leave residual error if the graph was far
       #   from the optimum.
-      num_iterations: 10
+      num_iterations: 5
 
       # Floor on the diagonal of scan-match edge covariances. Prevents one
       # over-confident match from dominating the optimiser.
@@ -318,8 +325,8 @@ slam_estimator:
       height: 1750          # 875
       origin_x: -62.5
       origin_y: -43.75
-      log_odds_occupied: 0.85
-      log_odds_free: 0.4
+      log_odds_occupied: 0.8        # 0.85
+      log_odds_free: 0.48           # 0.4
       log_odds_max: 5.0
       log_odds_min: -5.0
       max_range: 10.0
@@ -353,7 +360,7 @@ global_mapper:
       #   during longer runs.
       # Smaller: faster background map updates, but only the most recent portion
       #   of the trajectory is shown in the map until a new optimisation occurs.
-      max_keyframe_render: 150
+      keyframe_window: 50
 
     # See motion_model.lidar above for offsets.
     lidar:
@@ -376,8 +383,8 @@ global_mapper:
       height: 1750          # 875
       origin_x: -62.5
       origin_y: -43.75
-      log_odds_occupied: 0.85
-      log_odds_free: 0.4
+      log_odds_occupied: 0.8        # 0.85
+      log_odds_free: 0.48           # 0.4
       log_odds_max: 5.0
       log_odds_min: -5.0
       max_range: 10.0
