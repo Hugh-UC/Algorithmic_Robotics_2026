@@ -229,6 +229,7 @@ class NavigatorNode(Node):
         
         # emergency brake check
         if self.emergency_stop:
+            self.current_v = 0.0  # Reset filter memory instantly
             self._publish_stop()
             return
 
