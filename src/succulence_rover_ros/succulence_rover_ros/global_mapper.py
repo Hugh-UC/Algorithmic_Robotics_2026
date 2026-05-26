@@ -33,10 +33,10 @@ class GlobalMapperNode(Node):
             'slam_path_topic': '/succulence/slam/path',
             'keyframe_scan_topic': '/succulence/slam/keyframe_scan',
             'map_version_topic': '/succulence/slam/version',
-
+            
+            'slam.keyframe_window': 100,                # Keyframe rendering window for map updates
             'slam.map_publish_interval': 0.3,           # Fast refresh for physical safety
             'slam.scan_buffer_max_size': 5000,          # Larger: more history for optimization, but more RAM usage.
-            'slam.max_keyframe_render': 50,             # Cap on keyframes rendered during background rebuild
 
             'occupancy_grid.resolution': 0.025,
             'occupancy_grid.width': 300,                # Physical 7.5m map
@@ -75,11 +75,12 @@ class GlobalMapperNode(Node):
         self.keyframe_scan_topic    = str(get_p('keyframe_scan_topic'))         # Define topic for filtered keyframe scans
         self.map_version_topic      = str(get_p('map_version_topic'))           # Define topic for map versioning
 
+        self.keyframe_window        = int(get_p('slam.keyframe_window'))
+
         # Memory buffer for historical laser scans
         # Key: timestamp (seconds as float), Value: LaserScan message
         self.scan_buffer = {}
         self.scan_buffer_max_size = int(get_p('slam.scan_buffer_max_size'))
-        self.max_keyframe_render = int(get_p('slam.max_keyframe_render'))
 
         # Init Grid Map (Use your params here)
         self.occupancy_grid = OccupancyGrid(
@@ -217,14 +218,21 @@ class GlobalMapperNode(Node):
 
         # Capture version thread is currently drawing
         version_being_built = self.target_map_version
+
+        # 1. Determine which keyframes to render based on the configured window size.
+        total_poses : int   = len(path_msg.poses)
+        window : int        = self.keyframe_window
+
+        if window > 0 and total_poses > window:
+            poses_to_render = path_msg.poses[-window:]
+        else:
+            poses_to_render = path_msg.poses
         
-        # 1. Create an independent 'off-screen' mapper for the background thread
+        # 2. Create an independent 'off-screen' mapper for the background thread
         bg_mapper = copy.deepcopy(self.occupancy_grid)
         bg_mapper.grid.fill(0.0)
         
-        # 2. Render all keyframes into the background grid using the Path message
-        poses_to_render = path_msg.poses[-self.max_keyframe_render:] if len(path_msg.poses) > self.max_keyframe_render else path_msg.poses  # Pose render limit
-
+        # 3. Render all keyframes into the background grid using the Path message
         n_rendered = 0
         for pose_stamped in poses_to_render:
             stamp_nanos = pose_stamped.header.stamp.sec * 1000000000 + pose_stamped.header.stamp.nanosec
@@ -247,7 +255,7 @@ class GlobalMapperNode(Node):
                 )
                 n_rendered += 1
             
-        # 3. Atomically swap the fully built grid back to the live system!
+        # 4. Atomically swap the fully built grid back to the live system!
         with self.rebuild_lock:
             self.occupancy_grid.grid = bg_mapper.grid
 
