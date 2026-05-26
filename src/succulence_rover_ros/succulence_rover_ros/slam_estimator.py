@@ -37,6 +37,9 @@ class SlamEstimatorNode(Node):
             'keyframe_scan_topic': '/succulence/slam/keyframe_scan',
             'map_version_topic': '/succulence/slam/version',
 
+            'c_engine': 'full',                         # Use C++ optimized scan-matching and optimization
+
+            'slam.keyframe_window': 100,                # Keyframe rendering window for map updates
             'slam.keyframe_distance': 0.06,             # High density for physical speed
             'slam.keyframe_angle': 0.05,                # High density for physical slip
             'slam.optimization_interval': 10,
@@ -105,7 +108,13 @@ class SlamEstimatorNode(Node):
         self.keyframe_scan_topic    = str(get_p('keyframe_scan_topic'))         # Define topic for filtered keyframe scans
         self.map_version_topic      = str(get_p('map_version_topic'))           # Define topic for map versioning
 
+        c_engine_mode : str         = str(get_p('c_engine')).lower()
+        if c_engine_mode == 'full':
+            self.c_engine = True
+        else:
+            self.c_engine = False
 
+        self.keyframe_window        = int(get_p('slam.keyframe_window'))
         self.keyframe_distance      = float(get_p('slam.keyframe_distance'))
         self.keyframe_angle         = float(get_p('slam.keyframe_angle'))
         self.optimization_interval  = int(get_p('slam.optimization_interval'))
@@ -443,13 +452,13 @@ class SlamEstimatorNode(Node):
 
         self.optimizing = True
         self.get_logger().info(
-            f'Optimising ({self.pose_graph.get_num_nodes()} nodes, '
+            f'Optimising ({self.keyframe_window}/{self.pose_graph.get_num_nodes()} nodes, '
             f'{self.pose_graph.get_num_edges()} edges)...')
 
         # Create a communication channel
         self.opt_queue = multiprocessing.Queue()
 
-        p = multiprocessing.Process(target=run_optimization_process, args=(self.pose_graph, self.num_iterations, self.opt_queue))
+        p = multiprocessing.Process(target=run_optimization_process, args=(self.pose_graph, self.num_iterations, self.keyframe_window, self.opt_queue, self.c_engine))
         p.start()
 
         # Create a fast, non-blocking timer to check for the result
@@ -588,7 +597,7 @@ class SlamEstimatorNode(Node):
 
 
 
-def run_optimization_process(graph, num_iterations, result_queue):
+def run_optimization_process(graph, num_iterations, window_size, result_queue, c_engine=False):
     """
     Runs isolated from the ROS node to prevent Pickling errors.
 
@@ -599,7 +608,7 @@ def run_optimization_process(graph, num_iterations, result_queue):
     """
     t0 = time.monotonic()
     
-    graph_optimizer.optimize(graph, num_iterations)
+    graph_optimizer.optimize(graph, num_iterations, window_size, c_engine)
     
     result_queue.put((graph, time.monotonic() - t0))
 
