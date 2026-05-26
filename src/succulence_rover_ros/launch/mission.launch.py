@@ -62,6 +62,11 @@ def generate_launch_description():
         default_value='both',
         description='Which safety shields to use: "both", "collision", "emergency", or "none"'
     )
+    c_engine_arg = DeclareLaunchArgument(
+        'c_engine',
+        default_value='full',
+        description='Use C++ optimized engines for inflation and optimization: "full", "limited", or "none"'
+    )
 
     # validate mode argument
     mode = LaunchConfiguration('mode')
@@ -70,9 +75,25 @@ def generate_launch_description():
 
     costmap_mode = LaunchConfiguration('costmap')
     safety_mode = LaunchConfiguration('safety_mode')
+    c_engine = LaunchConfiguration('c_engine')
 
     # load appropriate params file (mode-specified)
     params_file = [config_dir, '/params_', mode, '.yaml']
+
+    config_log = LogInfo(
+        msg=[
+            "\n"
+            "====================================================\n"
+            " SUCCULENCE ROVER — LAUNCH CONFIGURATION SUMMARY\n"
+            "====================================================\n"
+            "    mode        -> ", mode, "\n"
+            "    costmap     -> ", costmap_mode, "\n"
+            "    safety_mode -> ", safety_mode, "\n"
+            "    c_engine    -> ", c_engine, "\n"
+            "    params_file -> params_", mode, ".yaml\n"
+            "====================================================\n"
+        ]
+    )
 
     # assign default frame names (mode-specific)
     odom_frame_default = PythonExpression(["'odom' if '", mode, "' == 'physical' else 'succulence/odom'"])
@@ -156,7 +177,10 @@ def generate_launch_description():
             executable='slam_estimator_node',
             name='slam_estimator',
             output='screen',
-            parameters=[params_file],
+            parameters=[
+                params_file,
+                {'c_engine': c_engine}
+            ],
         ),
         # 2. Global Mapper Node (The Artist)
         Node(
@@ -174,7 +198,7 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 params_file,
-                {'costmap_mode': costmap_mode}
+                {'costmaps.mode': costmap_mode, 'c_engine': c_engine}
             ],
         ),
 
@@ -202,10 +226,12 @@ def generate_launch_description():
         mode_arg,
         costmap_mode_arg,
         safety_mode_arg,
+        c_engine_arg,
         odom_frame_arg,
         base_link_frame_arg,
         lidar_frame_arg,
         map_frame_arg,
+        config_log,
         reset_pose,
         sim_launch,
         physical_launch
