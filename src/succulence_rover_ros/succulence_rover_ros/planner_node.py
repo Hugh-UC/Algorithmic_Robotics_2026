@@ -44,6 +44,8 @@ class PlannerNode(Node):
             'costmap_topic': '/succulence/costmap',
             'scan_topic': '/scan',                      # Physical Lidar
 
+            'c_engine': 'full',                         # Use C++ optimized inflation and optimization
+
             # Planning
             'planning.replan_period': 0.5,
             'planning.heuristic_weight': 1.0,           # Optimal for small 5x5m pen
@@ -108,15 +110,21 @@ class PlannerNode(Node):
         self.occ_threshold : int        = int(get_p('costmaps.occupancy_threshold'))
         self.unknown_as_obstacle : bool = bool(get_p('costmaps.treat_unknown_as_obstacle'))
 
-        self.global_inf_radius : float  = float(get_p('costmaps.global.inflation_radius_cells'))
-        self.global_inf_weight : float  = float(get_p('costmaps.global.inflation_weight'))
-        self.global_update_window       = float(get_p('costmaps.global.update_window_m'))
+        self.global_inf_radius : float      = float(get_p('costmaps.global.inflation_radius_cells'))
+        self.global_inf_weight : float      = float(get_p('costmaps.global.inflation_weight'))
+        self.global_update_window : float   = float(get_p('costmaps.global.update_window_m'))
         
         self.local_inf_radius : float   = float(get_p('costmaps.local.inflation_radius_cells'))
         self.local_inf_weight : float   = float(get_p('costmaps.local.inflation_weight'))
         self.local_max_range : float    = float(get_p('costmaps.local.max_obstacle_range'))
         self.local_min_range : float    = float(get_p('costmaps.local.min_obstacle_range'))
-        self.local_window_size          = float(get_p('costmaps.local.window_size'))
+        self.local_window_size : float  = float(get_p('costmaps.local.window_size'))
+
+        c_engine_mode : str             = str(get_p('c_engine')).lower()
+        if c_engine_mode in ['full', 'limited']:
+            self.c_engine = 'c++'
+        else:
+            self.c_engine = 'python'
 
         # Sensors
         self.lidar_x_offset : float     = float(get_p('lidar.x_offset'))
@@ -180,7 +188,7 @@ class PlannerNode(Node):
 
         # Call the C++ powered vectorized helper from astar.py
         self.global_costmap = inflate_obstacles(
-            'Global', 'c++',
+            'Global', self.c_engine,
             grid, self.global_inf_radius,
             self.occ_threshold, self.unknown_as_obstacle,
             self.global_inf_weight
@@ -363,7 +371,7 @@ class PlannerNode(Node):
         
         # D. Call Standard Loop Helper for the local ROI
         local_inflated = inflate_obstacles(
-            'Local', 'c++',
+            'Local', self.c_engine,
             local_grid, self.local_inf_radius, self.occ_threshold,
             False,          # Don't treat unknown as obstacle for live scans
             self.local_inf_weight
