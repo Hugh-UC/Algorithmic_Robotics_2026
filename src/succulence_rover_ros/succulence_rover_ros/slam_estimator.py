@@ -451,8 +451,10 @@ class SlamEstimatorNode(Node):
         self.map_data_arrived = False
 
         self.optimizing = True
+        num_nodes = self.pose_graph.get_num_nodes()
+        optimize_quantity = min(self.keyframe_window, num_nodes)
         self.get_logger().info(
-            f'Optimising ({self.keyframe_window}/{self.pose_graph.get_num_nodes()} nodes, '
+            f'Optimising ({optimize_quantity}/{num_nodes} nodes, '
             f'{self.pose_graph.get_num_edges()} edges)...')
 
         # Create a communication channel

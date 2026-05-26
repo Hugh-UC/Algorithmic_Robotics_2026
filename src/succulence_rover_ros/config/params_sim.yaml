@@ -179,7 +179,7 @@ slam_estimator:
       #   during longer runs.
       # Smaller: faster background map updates, but only the most recent portion
       #   of the trajectory is shown in the map until a new optimisation occurs.
-      keyframe_window: 50
+      keyframe_window: 150
 
       # Translation between keyframes, in metres. A new keyframe is added
       # once the rover has moved this far since the last one.
@@ -360,7 +360,7 @@ global_mapper:
       #   during longer runs.
       # Smaller: faster background map updates, but only the most recent portion
       #   of the trajectory is shown in the map until a new optimisation occurs.
-      keyframe_window: 50
+      keyframe_window: 150
 
     # See motion_model.lidar above for offsets.
     lidar:

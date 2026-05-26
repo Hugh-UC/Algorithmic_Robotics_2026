@@ -68,44 +68,69 @@ def compute_jacobians(pose_i: np.ndarray,
     return Ji, Jj
 
 
-def jacobian_matrix(x, pose_graph, anchored_ids, num_edges, num_anchors):
+def jacobian_matrix(x, num_nodes, from_ids, to_ids, sqrt_omegas, jac_rows, jac_cols, num_edges, num_anchors):
     """
     Computes the sparse Jacobian analytically to pass to least_squares.
+
+    Args:
+        x (_type_): _description_
+        from_ids (_type_): _description_
+        to_ids (_type_): _description_
+        sqrt_omegas (_type_): _description_
+        jac_rows (_type_): _description_
+        jac_cols (_type_): _description_
+        num_edges (_type_): _description_
+        num_anchors (_type_): _description_
+
+    Returns:
+        _type_: _description_
     """
-    rows, cols, data = [], [], []
-    n = len(x) // 3
-    nodes = x.reshape((n, 3))
+    nodes = x.reshape((num_nodes, 3))
+    pi = nodes[from_ids]
+    pj = nodes[to_ids]
     
-    # 1. Edge Jacobians
-    for idx, (f_id, t_id, _, info_mat) in enumerate(pose_graph.edges):
-        # Calculate your existing analytical jacobian blocks
-        Ji, Jj = compute_jacobians(nodes[f_id], nodes[t_id])
-        
-        # Scaling by info_sqrt is required because residuals are scaled by info_sqrt
-        info_sqrt = sqrtm(info_mat)
-        Ji_weighted = info_sqrt @ Ji
-        Jj_weighted = info_sqrt @ Jj
-        
-        row_offset = idx * 3
-        col_i = f_id * 3
-        col_j = t_id * 3
-        
-        for r in range(3):
-            for c in range(3):
-                rows.append(row_offset + r); cols.append(col_i + c); data.append(Ji_weighted[r, c])         # Ji block
-                rows.append(row_offset + r); cols.append(col_j + c); data.append(Jj_weighted[r, c])         # Jj block
-
-    # 2. Anchor Constraints (Using 3 degrees of freedom: X, Y, Theta)
-    # Derivative of (Node - Anchor) * 1000.0 is 1000.0
-    for idx, a_id in enumerate(anchored_ids):
-        row_offset = 3 * num_edges + 3 * idx
-        for r in range(3):
-            rows.append(row_offset + r)
-            cols.append(a_id * 3 + r)
-            data.append(1000.0)
-
-    total_residuals = 3 * num_edges + 3 * num_anchors
-    return sparse.coo_matrix((data, (rows, cols)), shape=(total_residuals, 3 * n)).tocsr()
+    c = np.cos(pi[:, 2])
+    s = np.sin(pi[:, 2])
+    dx = pj[:, 0] - pi[:, 0]
+    dy = pj[:, 1] - pi[:, 1]
+    
+    # Batch construct analytical derivative matrix blocks for all edges simultaneously
+    Ji = np.zeros((num_edges, 3, 3))
+    Ji[:, 0, 0] = -c
+    Ji[:, 0, 1] = -s
+    Ji[:, 0, 2] = -s * dx + c * dy
+    Ji[:, 1, 0] = s
+    Ji[:, 1, 1] = -c
+    Ji[:, 1, 2] = -c * dx - s * dy
+    Ji[:, 2, 2] = -1.0
+    
+    Jj = np.zeros((num_edges, 3, 3))
+    Jj[:, 0, 0] = c
+    Jj[:, 0, 1] = s
+    Jj[:, 1, 0] = -s
+    Jj[:, 1, 1] = c
+    Jj[:, 2, 2] = 1.0
+    
+    # Batch scale all derivatives via single NumPy C-backed matrix multiplication
+    Ji_weighted = np.matmul(sqrt_omegas, Ji)
+    Jj_weighted = np.matmul(sqrt_omegas, Jj)
+    
+    # Reshape data array to perfectly slide into our precomputed layout structure
+    Ji_flat = Ji_weighted.reshape(num_edges, 9)
+    Jj_flat = Jj_weighted.reshape(num_edges, 9)
+    edges_flat = np.hstack((Ji_flat, Jj_flat)).flatten()
+    
+    # Constant anchor derivative block
+    anchor_flat = np.full(3 * num_anchors, 1000.0)
+    
+    # Combine data arrays
+    jac_data = np.concatenate((edges_flat, anchor_flat))
+    
+    # Return exact CSR compressed matrix format instantly
+    return sparse.coo_matrix(
+        (jac_data, (jac_rows, jac_cols)), 
+        shape=(3 * num_edges + 3 * num_anchors, 3 * num_nodes)
+    ).tocsr()
 
 
 def norm_angle_vec(th):
@@ -113,36 +138,36 @@ def norm_angle_vec(th):
 
 
 def vectorize_original(x, num_nodes, from_ids, to_ids, meas, sqrt_omegas, anchored_ids, anchor_poses, num_anchors):
-        nodes = x.reshape((num_nodes, 3))
+    nodes = x.reshape((num_nodes, 3))
+    
+    # --- Edge Residuals ---
+    pi = nodes[from_ids]
+    pj = nodes[to_ids]
+    
+    c = np.cos(pi[:, 2])
+    s = np.sin(pi[:, 2])
+    
+    dx = pj[:, 0] - pi[:, 0]
+    dy = pj[:, 1] - pi[:, 1]
+    
+    diff_x = c * dx + s * dy
+    diff_y = -s * dx + c * dy
+    diff_theta = norm_angle_vec(pj[:, 2] - pi[:, 2])
+    
+    err = np.column_stack((diff_x, diff_y, diff_theta)) - meas
+    err[:, 2] = norm_angle_vec(err[:, 2])
+    
+    # Apply Information Matrix weighting instantly via C-einsum
+    err_weighted = np.einsum('nij,nj->ni', sqrt_omegas, err).flatten()
+    
+    # --- Anchor Residuals ---
+    if num_anchors > 0:
+        a_diff = nodes[anchored_ids] - anchor_poses
+        a_diff[:, 2] = norm_angle_vec(a_diff[:, 2])
+        a_err = (a_diff * 1000.0).flatten() # 1000^2 = 1e6 Anchor weight
+        return np.concatenate((err_weighted, a_err))
         
-        # --- Edge Residuals ---
-        pi = nodes[from_ids]
-        pj = nodes[to_ids]
-        
-        c = np.cos(pi[:, 2])
-        s = np.sin(pi[:, 2])
-        
-        dx = pj[:, 0] - pi[:, 0]
-        dy = pj[:, 1] - pi[:, 1]
-        
-        diff_x = c * dx + s * dy
-        diff_y = -s * dx + c * dy
-        diff_theta = norm_angle_vec(pj[:, 2] - pi[:, 2])
-        
-        err = np.column_stack((diff_x, diff_y, diff_theta)) - meas
-        err[:, 2] = norm_angle_vec(err[:, 2])
-        
-        # Apply Information Matrix weighting instantly via C-einsum
-        err_weighted = np.einsum('nij,nj->ni', sqrt_omegas, err).flatten()
-        
-        # --- Anchor Residuals ---
-        if num_anchors > 0:
-            a_diff = nodes[anchored_ids] - anchor_poses
-            a_diff[:, 2] = norm_angle_vec(a_diff[:, 2])
-            a_err = (a_diff * 1000.0).flatten() # 1000^2 = 1e6 Anchor weight
-            return np.concatenate((err_weighted, a_err))
-            
-        return err_weighted
+    return err_weighted
 
 
 def optimize_lm(pose_graph: PoseGraph, num_iterations: int = 10, window_size: int = 0):
@@ -278,9 +303,40 @@ def optimize_c(pose_graph: PoseGraph, num_iterations: int = 10, window_size: int
     # 4. Initial Guess
     x0 = np.array([p for p in pose_graph.nodes]).flatten()
 
+    # 5. Pre-Compute Sparse Structure Matrix Blueprint
+    jac_rows = []
+    jac_cols = []
+
+    # Structural index map for Edge constraints
+    for idx in range(num_edges):
+        r_start = 3 * idx
+        f_col = 3 * from_ids[idx]
+        t_col = 3 * to_ids[idx]
+        # Ji indices (row-major alignment)
+        for r in range(3):
+            for c in range(3):
+                jac_rows.append(r_start + r)
+                jac_cols.append(f_col + c)
+        # Jj indices (row-major alignment)
+        for r in range(3):
+            for c in range(3):
+                jac_rows.append(r_start + r)
+                jac_cols.append(t_col + c)
+                
+    # Structural index map for Anchor constraints
+    for idx in range(num_anchors):
+        r_start = 3 * num_edges + 3 * idx
+        a_col = 3 * anchored_ids[idx]
+        for r in range(3):
+            jac_rows.append(r_start + r)
+            jac_cols.append(a_col + r)
+            
+    jac_rows = np.array(jac_rows, dtype=int)
+    jac_cols = np.array(jac_cols, dtype=int)
+
     # 5. Define Analytical Jacobian Callback
     def jac_func(x):
-        return jacobian_matrix(x, pose_graph, anchored_ids, num_edges, num_anchors)
+        return jacobian_matrix(x, n, from_ids, to_ids, sqrt_omegas, jac_rows, jac_cols, num_edges, num_anchors)
 
     # 6. Execute C-Engine Optimization
     res = least_squares(
