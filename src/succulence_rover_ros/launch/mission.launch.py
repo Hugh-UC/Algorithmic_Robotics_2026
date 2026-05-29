@@ -43,6 +43,7 @@ from launch.substitutions import LaunchConfiguration, EqualsSubstitution, Python
 
 def generate_launch_description():
     config_dir = os.path.join(os.path.dirname(__file__), '..', 'config')
+    # overrides_dir = os.path.join(config_dir, 'overrides')
 
     # define mode launch argument ('sim' or 'physical')
     mode_arg = DeclareLaunchArgument(
@@ -62,10 +63,11 @@ def generate_launch_description():
         default_value='both',
         description='Which safety shields to use: "both", "collision", "emergency", or "none"'
     )
+    # define C++ engine usage launch argument ('cpp', 'full', 'limited', or 'none')
     c_engine_arg = DeclareLaunchArgument(
         'c_engine',
-        default_value='full',
-        description='Use C++ optimized engines for inflation and optimization: "full", "limited", or "none"'
+        default_value='cpp',
+        description='Use C++ optimized engines for inflation and optimization: "cpp", "full", "limited", or "none"'
     )
 
     # validate mode argument
@@ -77,8 +79,15 @@ def generate_launch_description():
     safety_mode = LaunchConfiguration('safety_mode')
     c_engine = LaunchConfiguration('c_engine')
 
-    # load appropriate params file (mode-specified)
-    params_file = [config_dir, '/params_', mode, '.yaml']
+    # ----------------------------------------------------------
+    # DYNAMIC PARAMETER HIERARCHY (LAST FILE WINS)
+    # ----------------------------------------------------------
+    base_params = [config_dir, '/params_base.yaml']
+    mode_params = [config_dir, '/params_', mode, '.yaml']
+    engine_params = [config_dir, '/overrides_', c_engine, '.yaml']
+
+    param_hierarchy = [base_params, mode_params, engine_params]
+    # ----------------------------------------------------------
 
     config_log = LogInfo(
         msg=[
@@ -90,7 +99,9 @@ def generate_launch_description():
             "    costmap     -> ", costmap_mode, "\n"
             "    safety_mode -> ", safety_mode, "\n"
             "    c_engine    -> ", c_engine, "\n"
-            "    params_file -> params_", mode, ".yaml\n"
+            "    params (1)  -> params_base.yaml\n"
+            "    params (2)  -> params_", mode, ".yaml\n"
+            "    params (3)  -> overrides_", c_engine, ".yaml\n"
             "====================================================\n"
         ]
     )
@@ -126,10 +137,7 @@ def generate_launch_description():
         executable='navigator_node',
         name='navigator_node',
         output='screen',
-        parameters=[
-            params_file,
-            {'safety.mode': safety_mode}        # inject safety launch flag
-        ],
+        parameters=param_hierarchy + [{'safety.mode': safety_mode}],    # inject safety launch flag
     )
 
     # event handler: watches nav_node, prints success, and kills ROS 2.
@@ -177,10 +185,7 @@ def generate_launch_description():
             executable='slam_estimator_node',
             name='slam_estimator',
             output='screen',
-            parameters=[
-                params_file,
-                {'c_engine': c_engine}
-            ],
+            parameters=param_hierarchy + [{'c_engine': c_engine}],
         ),
         # 2. Global Mapper Node (The Artist)
         Node(
@@ -188,7 +193,7 @@ def generate_launch_description():
             executable='global_mapper_node',
             name='global_mapper',
             output='screen',
-            parameters=[params_file],
+            parameters=param_hierarchy + [{'c_engine': c_engine}],
         ),
 
         Node(
@@ -196,10 +201,7 @@ def generate_launch_description():
             executable='planner_node',
             name='planner_node',
             output='screen',
-            parameters=[
-                params_file,
-                {'costmaps.mode': costmap_mode, 'c_engine': c_engine}
-            ],
+            parameters=param_hierarchy + [{'costmaps.mode': costmap_mode, 'c_engine': c_engine}],
         ),
 
         nav_node,

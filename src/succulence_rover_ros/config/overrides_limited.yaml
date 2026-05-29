@@ -1,0 +1,102 @@
+# [OVERRIDE] Engine: LIMITED (SciPy Sparse)
+# 
+# Description: Uses C-backed SciPy functions (EDT and Sparse Solvers)
+
+# ====================================================================
+# SLAM Estimator Node (SLAM)
+# ====================================================================
+slam_estimator:
+  ros__parameters:
+    # [DO NOT CHANGE] Engine Computation Control.
+    # Setting to 'none' prioritises the use of python only methods and loop
+    # based calulations.
+    c_engine: "limited"
+
+    slam:
+      # Maximum number of keyframes to render per new optimisation.
+      # Larger: more complete map, but exponentially increasing CPU usage
+      #   during longer runs.
+      # Smaller: faster background map updates, but only the most recent portion
+      #   of the trajectory is shown in the map until a new optimisation occurs.
+      keyframe_window: 100
+
+      # Translation between keyframes, in metres. A new keyframe is added
+      # once the rover has moved this far since the last one.
+      # Larger: fewer keyframes -> lighter graph, longer scan-match shifts
+      #   that are more likely to saturate the search window.
+      # Smaller: more keyframes -> denser graph, more CPU per optimisation
+      #   pass, but tighter local constraints.
+      keyframe_distance: 0.3
+
+      # Rotation between keyframes, in radians.
+      # Larger: fewer keyframes during turns -> heading drift accumulates
+      #   between corrections.
+      # Smaller: keyframes during sharp turns -> better corrected heading,
+      #   higher CPU.
+      keyframe_angle: 0.2
+
+      # Run graph optimisation every N keyframes.
+      # Larger: optimiser runs less often -> cheaper but the live map can
+      #   show drift longer before snapping.
+      # Smaller: optimiser runs more often -> tighter map but more CPU and
+      #   more frequent visual snaps.
+      optimization_interval: 15
+
+      # Gauss-Newton iterations per optimisation call.
+      # Larger: more thorough convergence per call, more CPU per snap.
+      # Smaller: cheaper but may leave residual error if the graph was far
+      #   from the optimum.
+      num_iterations: 5
+    
+    scan_matcher:
+      # Half-width of the brute-force search window, per axis.
+      # search_x / search_y in metres, search_theta in radians. The
+      # matcher tests every candidate (dx, dy, dtheta) inside this window.
+      # Larger: catches bigger jumps (e.g. wheel slip), more candidates
+      #   to score -> more CPU per match.
+      # Smaller: cheaper but the true peak can fall outside the window
+      #   and the matcher will silently saturate at the boundary.
+      search_x: 0.4
+      search_y: 0.4
+      search_theta: 0.15
+
+
+# ====================================================================
+# Global Mapper Node (SLAM)
+# ====================================================================
+global_mapper:
+  ros__parameters:
+    # [DO NOT CHANGE] See slam_estimator.c_engine and match above value.
+    c_engine: "limited"
+
+    slam:
+      # Maximum number of keyframes to render per new optimisation.
+      # Larger: more complete map, but exponentially increasing CPU usage
+      #   during longer runs.
+      # Smaller: faster background map updates, but only the most recent portion
+      #   of the trajectory is shown in the map until a new optimisation occurs.
+      keyframe_window: 100
+
+      # Seconds between OccupancyGrid publishes from SLAM.
+      # Larger: less RViz/CPU load, laggier map.
+      # Smaller: snappier map, more bandwidth and rendering cost.
+      map_publish_interval: 1.0
+
+
+# ====================================================================
+# A* Path Planner
+# ====================================================================
+planner_node:
+  ros__parameters:
+    # [DO NOT CHANGE] See slam_estimator.c_engine and match above value.
+    c_engine: "limited"
+    
+    planning:
+      # Seconds between A* replans. The planner ignores incoming map
+      # updates between replans to keep the controller from chasing a
+      # jittering plan.
+      # Larger: stable plans, slower reaction to newly mapped obstacles.
+      # Smaller: reacts faster but the path can visibly jitter as the
+      #   map fills in.
+      # Can be made smaller if heuristic weight (epsilon) is increased!
+      replan_period: 2.0

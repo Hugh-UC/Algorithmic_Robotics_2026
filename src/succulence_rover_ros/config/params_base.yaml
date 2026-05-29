@@ -1,0 +1,340 @@
+# [BASE] Succulence Rover — Core Algorithmic Parameters
+# 
+# Description: This is the Single Source of Truth for all algorithmic 
+#   logic, Bayesian probabilities, A* weights, and internal topics. 
+#   Tuning the robot's mathematical behavior should be done here.
+
+# ====================================================================
+# Motion Model Node (Dead Reckoning)
+# ====================================================================
+motion_model:
+  ros__parameters:
+    dead_reckoning:
+      # Where the dead-reckoned pose is republished for downstream nodes.
+      odometry_topic: "/succulence/dead_reckoning/odometry"
+      # Path topic for visualising the dead-reckoned trajectory in RViz2.
+      path_topic: "/succulence/dead_reckoning/path"
+
+    frames:
+      map_frame: "map"
+
+    motion_model:
+      # alpha1 - Translation variance per unit translation (wheel slip in
+      # straight-line motion).
+      # Larger: pose-uncertainty ellipse grows faster while driving forward,
+      #   downstream filters trust odometry less. Smaller: tighter ellipse,
+      #   more confidence in wheel odometry.
+      alpha1: 0.1
+
+      # alpha2 - Translation variance contributed by rotation. Models how
+      # much the rover slides sideways while turning.
+      # Larger: turns inject more positional uncertainty.
+      # Smaller: rotation considered to leave position untouched.
+      alpha2: 0.05
+
+      # alpha3 - Rotation variance contributed by translation. Models heading
+      # drift while driving straight.
+      # Larger: forward motion injects more heading uncertainty.
+      # Smaller: heading is considered stable during straight-line motion.
+      alpha3: 0.05
+
+      # alpha4 - Rotation variance per unit rotation (yaw drift while
+      # turning). Primary lever for heading uncertainty.
+      # Larger: heading uncertainty grows quickly during turns.
+      # Smaller: rover trusts its yaw more between observations.
+      alpha4: 0.3
+
+      # Maximum number of poses kept in the published Path message before
+      # the oldest are dropped. Purely a visualisation cap.
+      # Larger: longer trajectory shown in RViz, more memory.
+      # Smaller: shorter trail, lower load.
+      max_trajectory_length: 1000
+
+
+# ====================================================================
+# Occupancy Grid Mapper Node
+# ====================================================================
+occupancy_grid_mapper:
+  ros__parameters:
+    # Pose source used to project scans into the world frame. The mapper
+    # uses dead-reckoning here (no SLAM correction) — that is intentional,
+    # so odom drift can be seen in the resulting map.
+    odom_topic: "/succulence/dead_reckoning/odometry"
+
+    # Output map topic for this node.
+    map_topic: "/succulence/map/odom_only"
+
+    # Maximum rate at which incoming scans are processed
+    # Larger: more responsive to new data but higher CPU.
+    # Smaller: cheaper but the map and pose may lag behind the latest
+    #   scan data.
+    # Exceeding 10 is pointless as the Lidar does not return scans as fast
+    scan_rate_limit: 10.0
+
+    occupancy_grid:
+      # Lidar Hit Probability (0.5 to 1.0)
+      # The probability that a cell is occupied when a scan ray ends in it.
+      # The mapper converts this to a positive log-odd increment.
+      # Larger: Walls map instantly and solidly, but sensor noise
+      #   (like reflections) will create stubborn ghost walls.
+      # Smaller: Robust to noise, but real walls require multiple 
+      #   Lidar hits to register solidly on the map.
+      log_odds_occupied: 0.8     # 0.85
+
+      # Lidar Pass-Through Probability (0.0 to 0.49)
+      # The probability that a cell is occupied when a scan ray passes through it.
+      # The mapper converts this to a negative log-odd decrement.
+      # Smaller: Aggressively subtracts wall confidence. Clears out
+      #   moving people and ghost walls very quickly.
+      # Larger: Cautious clearing. Better for highly reflective 
+      #   environments where the Lidar occasionally "misses" a real wall.
+      # [WARN] MUST be less than 0.5, otherwise passing rays will draw walls!
+      log_odds_free: 0.35    # 0.4
+
+      # Saturation clamp for the log-odds value of any cell.
+      # Larger magnitude: cells become "very confident" and resist
+      #   change once committed.
+      # Smaller magnitude: cells stay easier to flip — map adapts
+      #   faster but flickers with noise.
+      log_odds_max: 5.0
+      log_odds_min: -5.0
+
+      # Range gate on lidar returns used for mapping (with FOV clipping).
+      # max_range Larger: longer rays included, more mapping coverage,
+      #   more sensitive to noisy long-range returns.
+      # max_range Smaller: only nearby returns trusted, smaller built map.
+      # min_range Larger: ignores closer returns (filters body reflections).
+      # min_range Smaller: includes closer returns (risks self-hits).
+      max_range: 10.0
+      min_range: 0.14
+      laser_fov: 270.0
+    
+      # Taper zones for angular edge weighting
+      edge_trim_degrees: 1.5
+      edge_buffer_degrees: 3.0
+      edge_min_weight: 0.1
+
+
+# ====================================================================
+# SLAM Estimator Node (PoseGraph SLAM)
+# ====================================================================
+slam_estimator:
+  ros__parameters:
+    # Outputs from SLAM.
+    map_topic: "/succulence/map"
+    slam_odometry_topic: "/succulence/slam/odometry"
+    slam_path_topic: "/succulence/slam/path"
+    keyframe_scan_topic: "/succulence/slam/keyframe_scan"
+    map_version_topic: "/succulence/slam/version"
+
+    # 
+    slam:
+      # Floor on the diagonal of scan-match edge covariances. Prevents one
+      # over-confident match from dominating the optimiser.
+      # Larger: scan-match edges treated as less certain -> odom has more
+      #   weight, slower correction.
+      # Smaller: scan-match edges trusted more -> faster correction but
+      #   more sensitive to bad matches.
+      scan_match_cov_xy: 0.003
+      scan_match_cov_theta: 0.0015
+
+      # Relative weighting of scan-to-scan edges vs scan-to-map edges in the
+      # graph optimiser's cost function. This parameter tunes how much it
+      # prioritises scan matches vs map consistency.
+      # Larger: scan-to-map matches have more influence on corrected pose.
+      # Smaller: scan-to-scan matches have more influence on corrected pose.
+      map_match_weight: 0.3
+
+      # The percentage of scan points that must hit known occupied cells 
+      # in the map to trust the scan-to-map match at full weight.
+      # 0.5 means if 50% of your lidar rays hit a known wall, you trust the map 100%.
+      # If only 25% hit, you trust the map 50% (scaling down linearly).
+      maturity_threshold: 0.2
+
+      # Maximum rate at which incoming scans are processed
+      # Larger: more responsive to new data but higher CPU.
+      # Smaller: cheaper but the map and pose may lag behind the latest
+      #   scan data.
+      scan_rate_limit: 15.0     # TRY: Change to 10.0 (match: 'scan_rate_limit'), currently matches control.rate_hz
+
+    # 
+    scan_matcher:
+      # Number of pixels to dilate obstacles in the reference grid for 
+      # scan-matching robustness.
+      # Larger: More robust matching, prevents coarse search from skipping 
+      #   over walls, but can blur distinct nearby features.
+      # Smaller: Higher precision, preserves geometry, but requires finer
+      #   tuning of the coarse_search_multiplier to avoid "jumping" walls.
+      # 
+      # Rule of thumb: Dilation_Size >= Coarse_Search_Multiplier - (Map_Resolution / Matcher_Resolution)
+      # Explanation: Because super-sampling (Matcher_Res < Map_Res) effectively 
+      # "expands" the pixel-width of an obstacle, you can reduce the dilation 
+      # relative to the search multiplier. If this value is too small, 
+      # the matcher will alias and "paint" incorrect walls during rotation.
+      dilation_size: 3
+
+      # Multiplier for the first-pass coarse search step (relative to resolution).
+      # Larger: significantly faster search, but risks "skipping" the true peak
+      #   if the environment is too geometrically complex.
+      # Smaller: slower search (closer to brute-force), but more robust to
+      #   narrow correlation peaks. Recommended range: 2.0 to 6.0.
+      coarse_search_multiplier: 4.0
+
+      # Minimum normalised correlation score for a scan-match to be
+      # accepted as an edge.
+      # Larger: stricter -> fewer false matches but the graph may starve
+      #   for scan-match edges in feature-poor areas.
+      # Smaller: more matches accepted -> more edges but more noise from
+      #   spurious correlations.
+      min_score: 0.55
+
+      # 
+      laser_fov: 270.0
+
+      # Taper zones for angular edge weighting
+      # Use looser constraints for scan matching and tighter for occupancy
+      # grid, for best results.
+      edge_trim_degrees: 1.0
+      edge_buffer_degrees: 2.0
+      edge_min_weight: 0.1
+    
+    # Alpha noise model used for odometry edges in the pose graph. Same
+    # interpretation as in the motion_model node above.
+    motion_model:
+      alpha1: 0.1
+      alpha2: 0.05
+      alpha3: 0.05
+      alpha4: 0.3
+
+    # SLAM keeps its own copy of the occupancy grid for the corrected map.
+    # See occupancy_grid_mapper.occupancy_grid above for what each value
+    # means; values must match across nodes for consistent visualisation.
+    occupancy_grid:
+      log_odds_occupied: 0.8
+      log_odds_free: 0.35
+      log_odds_max: 5.0
+      log_odds_min: -5.0
+      max_range: 10.0
+      min_range: 0.14
+      laser_fov: 270.0
+      edge_trim_degrees: 1.5
+      edge_buffer_degrees: 3.0
+      edge_min_weight: 0.1
+
+
+# ====================================================================
+# Global Mapper Node (Optimised SLAM)
+# ====================================================================
+global_mapper:
+  ros__parameters:
+    # Outputs from SLAM.
+    map_topic: "/succulence/map"
+    slam_odometry_topic: "/succulence/slam/odometry"
+    slam_path_topic: "/succulence/slam/path"
+    keyframe_scan_topic: "/succulence/slam/keyframe_scan"
+    map_version_topic: "/succulence/slam/version"
+
+    slam:
+      # Maximum number of laser scans to store in memory
+      # Larger: can correlate against older scans, more robust to loop closures
+      # Smaller: less memory usage, may lose the ability to close loops.
+      scan_buffer_max_size: 10000
+
+    # [WARN] Keep same as motion_model above.
+    motion_model:
+      alpha1: 0.1
+      alpha2: 0.05
+      alpha3: 0.05
+      alpha4: 0.3
+
+    # SLAM keeps its own copy of the occupancy grid for the corrected map.
+    # See occupancy_grid_mapper.occupancy_grid above for what each value
+    # means; values must match across nodes for consistent visualisation.
+    occupancy_grid:
+      log_odds_occupied: 0.8
+      log_odds_free: 0.35
+      log_odds_max: 5.0
+      log_odds_min: -5.0
+      max_range: 10.0
+      min_range: 0.14
+      laser_fov: 270.0
+      edge_trim_degrees: 1.5
+      edge_buffer_degrees: 3.0
+      edge_min_weight: 0.1
+    
+
+# ====================================================================
+# A* Path Planner
+# ====================================================================
+planner_node:
+  ros__parameters:
+    map_topic: "/succulence/map"
+    odom_topic: "/succulence/slam/odometry"
+    plan_topic: "/succulence/plan"
+    costmap_topic: "/succulence/costmap"
+
+    frames:
+      map_frame: "map"
+
+    planning:
+      heuristic_weight: 1.0       # 1.0 = Optimal (no change), >1.0 = Greedy/Fast
+      data_weight: 0.08           # "Path Fidelity" (High = sticks to A* grid, Low = smooths out)
+      smooth_weight: 0.85         # "Rubber Band" (High = cuts corners tightly)
+      goal_smooth_distance: 4.0   # Distance from the goal (in cells) at which smoothing is relaxed to allow tighter turns. (4.0 * 0.05 = 0.20m)
+      smooth_tolerance: 0.01      # Numerical stopping condition for the Gradient Descent algorithm inside _smooth_path function.
+
+    costmaps:
+      # Planner uses costmap to inflate obstacles and plan around them.
+      # Costmap is also published for visualisation in RViz2.
+      mode: "both"        # Options: "both", "global", "local", "none", defaults: "both"
+
+      # Cell value (0..100) at or above which a cell is treated as an
+      # obstacle by A*.
+      # Larger: only highly-confident occupied cells block the planner;
+      #   paths cut closer to walls.
+      # Smaller: any hint of occupancy blocks A* -> safer but more
+      #   "no path" failures while the map is sparse.
+      occupancy_threshold: 50
+
+      # If true, unmapped cells are treated as obstacles. If false, A*
+      # plans optimistically through unknown space and replans as the
+      # map grows.
+      # true: safer in known environments but the rover refuses to plan
+      #   into unmapped terrain.
+      # false: more aggressive -> rover starts moving immediately, may
+      #   hit something the map hasn't yet revealed.
+      treat_unknown_as_obstacle: false
+
+      global:
+        # Absolute maximum mathematical "fear" the robot has of touching a wall.
+        # In the heuristic function, this caps the cost of cells near obstacles
+        # Larger = Scared of walls, hugs the centre line.
+        # Smaller = Less scared, cuts corners more aggressively.
+        inflation_weight: 50.0
+
+      local:
+        # Absolute maximum mathematical "fear" the robot has of touching a wall.
+        # Lower weight for local costmap to allow squeezing through tighter spaces.
+        inflation_weight: 25.0
+
+# ====================================================================
+# Pure-Pursuit Navigator
+# ====================================================================
+navigator_node:
+  ros__parameters:
+    plan_topic: "/succulence/plan"
+    odom_topic: "/succulence/slam/odometry"
+
+    safety:
+      # Determines which hardware-level brake overrides are active.
+      # Options: "both", "collision", "emergency", "none". Defaults: "both"
+      mode: "both"
+
+    control:
+      # Seconds without a fresh plan before the navigator stops the rover
+      # as a safety fallback. Must comfortably exceed `replan_period`.
+      # Larger: more tolerant of slow replans, slower to detect a stuck
+      #   planner.
+      # Smaller: faster emergency stop, may trigger spuriously between
+      #   normal replans.
+      plan_timeout: 6.0
