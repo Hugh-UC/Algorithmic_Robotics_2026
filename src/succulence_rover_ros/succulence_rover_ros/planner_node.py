@@ -11,7 +11,6 @@ Usage: The planner node is launched as part of the mission.launch.py file,
         the params_sim.yaml and params_physical.yaml files and loaded by the
         launch file.
 """
-
 import numpy as np
 import rclpy
 from rclpy.node import Node, Publisher
@@ -44,7 +43,7 @@ class PlannerNode(Node):
             'costmap_topic': '/succulence/costmap',
             'scan_topic': '/scan',                      # Physical Lidar
 
-            'c_engine': 'full',                         # Use C++ optimized inflation and optimization
+            'c_engine': 'cpp',                         # Use C++ optimized inflation and optimization
 
             # Planning
             'planning.replan_period': 0.5,
@@ -121,8 +120,8 @@ class PlannerNode(Node):
         self.local_window_size : float  = float(get_p('costmaps.local.window_size'))
 
         c_engine_mode : str             = str(get_p('c_engine')).lower()
-        if c_engine_mode in ['full', 'limited']:
-            self.c_engine = 'c++'
+        if c_engine_mode in ['cpp', 'full', 'limited']:
+            self.c_engine = 'cpp'
         else:
             self.c_engine = 'python'
 
@@ -161,7 +160,7 @@ class PlannerNode(Node):
         # log initialisation info
         self.get_logger().info(
             f'PlannerNode started — map: {map_topic}, odom: {odom_topic}, '
-            f'goal: ({self.goal_x:.2f}, {self.goal_y:.2f})')
+            f'goal: ({self.goal_x:.4f}, {self.goal_y:.4f})')
 
 
     def _scan_cb(self, msg: LaserScan):

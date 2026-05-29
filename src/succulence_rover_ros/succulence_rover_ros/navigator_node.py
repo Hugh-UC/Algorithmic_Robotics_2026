@@ -42,7 +42,7 @@ class NavigatorNode(Node):
             'safety.collision_brake_dist': 0.25,        # Threshold for soft recovery (m)
             'safety.emergency_brake_dist': 0.12,        # Threshold for hard motor lock (m)
             'safety.forward_cone_angle': 0.7,           # Width of protective Lidar cone (rad)
-            'safety.recovery_spin_rate': 0.3,           # Cap on turn speed during recovery (rad/s)
+            'safety.recovery_spin_v': 0.3,              # Cap on turn speed during recovery (rad/s)
 
             'lidar.yaw_offset': 1.570,                  # Physical TB4 Lidar rotation
             
@@ -53,6 +53,8 @@ class NavigatorNode(Node):
             'control.lookahead_ratio': 1.5,
             'control.max_linear_v': 0.3,
             'control.max_angular_v': 0.18,
+            'control.max_linear_a': 0.5,                # Max forward/reverse acceleration (m/s^2)
+            'control.max_angular_a': 1.0,               # Max turning acceleration (rad/s^2)
             'control.goal_tolerance': 0.05,             # Account for physical overshoot
             'control.plan_timeout': 6.0
         }
@@ -86,15 +88,22 @@ class NavigatorNode(Node):
         self.col_brake_dist     = float(get_p('safety.collision_brake_dist'))
         self.emg_brake_dist     = float(get_p('safety.emergency_brake_dist'))
         self.cone_angle_rad     = float(get_p('safety.forward_cone_angle'))
-        self.recovery_spin_rate = float(get_p('safety.recovery_spin_rate'))
+        self.recovery_spin_v    = float(get_p('safety.recovery_spin_v'))
         self.emergency_stop     = False         # track emergency stop state
         self.collision_stop     = False         # track collision stop state
 
         self.lidar_yaw_offset = float(get_p('lidar.yaw_offset'))
 
         # rate/timeout
-        rate_hz             = float(get_p('control.rate_hz'))
+        self.rate_hz        = float(get_p('control.rate_hz'))
         self.plan_timeout   = float(get_p('control.plan_timeout'))
+
+        # velocity/acceleration & goal tolerance
+        max_linear_v : float            = float(get_p('control.max_linear_v'))
+        max_angular_v : float           = float(get_p('control.max_angular_v'))
+        self.max_linear_a : float       = float(get_p('control.max_linear_a'))
+        self.max_angular_a : float      = float(get_p('control.max_angular_a'))
+        goal_tolerance                  = float(get_p('control.goal_tolerance'))
 
         # store the adaptive clamps
         self.lookahead_min = float(get_p('control.lookahead_min'))
@@ -104,18 +113,18 @@ class NavigatorNode(Node):
         # initialize follower
         self.follower = PurePursuit(
             lookahead=self.lookahead_max,       # default starting value
-            max_linear_v=float(get_p('control.max_linear_v')),
-            max_angular_v=float(get_p('control.max_angular_v')),
-            goal_tolerance=float(get_p('control.goal_tolerance')),
+            max_linear_v=max_linear_v,
+            max_angular_v=max_angular_v,
+            max_linear_a=self.max_linear_a,
+            max_angular_a=self.max_angular_a,
+            recovery_spin_v=self.recovery_spin_v,
+            goal_tolerance=goal_tolerance,
         )
 
-        # track current linear velocity
-        self.current_v: float = 0.0
-
-        self.pose: np.ndarray | None = None
-        self.path: list[tuple[float, float]] = []
-        self.last_plan_time: float = 0.0
-        self.arrived = False
+        self.pose : np.ndarray | None           = None
+        self.path : list[tuple[float, float]]   = []
+        self.last_plan_time : float             = 0.0
+        self.arrived                            = False
         
         # publishers/subscribers
         self.cmd_pub    = self.create_publisher(Twist, cmd_vel_topic, 10)
@@ -123,7 +132,7 @@ class NavigatorNode(Node):
         self.create_subscription(Path, plan_topic, self._plan_cb, 10)
         self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
         self.create_subscription(LaserScan, scan_topic, self._scan_cb, 10)
-        self.create_timer(1.0 / rate_hz, self._tick)
+        self.create_timer(1.0 / self.rate_hz, self._tick)
 
         self.get_logger().info(
             f'NavigatorNode started — plan: {plan_topic}, odom: {odom_topic}, '
@@ -220,39 +229,28 @@ class NavigatorNode(Node):
             return
         
         # extrapolate dynamic lookahead (with clamping)
-        dynamic_lookahead = abs(self.current_v) * self.lookahead_ratio
+        dynamic_lookahead = abs(self.follower.current_v) * self.lookahead_ratio
         dynamic_lookahead = np.clip(dynamic_lookahead, self.lookahead_min, self.lookahead_max)
         self.follower.lookahead = float(dynamic_lookahead)
 
         # publish visualization to RViz2
         self._publish_lookahead_visual(dynamic_lookahead)
-        
-        # emergency brake check
-        if self.emergency_stop:
-            self.current_v = 0.0  # Reset filter memory instantly
-            self._publish_stop()
-            return
 
         now = self.get_clock().now().nanoseconds / 1e9
         stale = (now - self.last_plan_time) > self.plan_timeout
 
         if self.arrived or stale or not self.path:
+            self.follower.compute_cmd(self.pose, [], 1.0/self.rate_hz, e_stop=True)
             self._publish_stop()
             return
 
-        v, w, arrived = self.follower.compute_cmd(self.pose, self.path)
-
-        # Apply a simple low-pass filter to velocity to stop the "jerk"
-        # self.current_v is the tracking variable you already have.
-        v = 0.8 * self.current_v + 0.2 * v
-
-        # soft collision (recovery spin)
-        if self.collision_stop:
-            v = 0.0                     # stop forward movement
-            w = np.clip(w, -self.recovery_spin_rate, self.recovery_spin_rate)   # allow capped turning to escape
-
-        # update internal velocity tracker for dynamic lookahead
-        self.current_v = float(v)
+        v, w, arrived = self.follower.compute_cmd(
+            pose=self.pose, 
+            path=self.path, 
+            dt=(1.0 / self.rate_hz), 
+            c_stop=self.collision_stop, 
+            e_stop=self.emergency_stop
+        )
 
         if arrived and not self.arrived:
             self.arrived = True
@@ -264,7 +262,7 @@ class NavigatorNode(Node):
             else:
                 goal_x, goal_y = self.pose[0], self.pose[1] # fallback
 
-            self.get_logger().info(f'Goal Completed | Success | Arrived at ({goal_x:.2f}, {goal_y:.2f})')
+            self.get_logger().info(f'Goal Completed | Success | Arrived at ({goal_x:.4f}, {goal_y:.4f})')
             self.get_logger().info('✅ TurtleBot Goal Complete! Successfully arrived at goal!')
             sys.exit(0)
             return
@@ -273,7 +271,6 @@ class NavigatorNode(Node):
         twist.linear.x = float(v)
         twist.angular.z = float(w)
         self.cmd_pub.publish(twist)
-        self.current_v = float(v)
 
     def _publish_lookahead_visual(self, lookahead: float):
         """

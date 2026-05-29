@@ -207,7 +207,7 @@ def inflate_obstacles(name: str, method : str,
         return cost_map
         
 
-    if method == 'c++':
+    if method == 'cpp':
         cost_map = inflate_obstacles_vectors(grid, radius_cells, occupancy_threshold, treat_unknown_as_obstacle, inflation_weight)
         
         # Log inflation computation time
@@ -216,7 +216,7 @@ def inflate_obstacles(name: str, method : str,
 
         return cost_map
 
-    raise ValueError(f"Invalid inflation method: {method}. Use 'python' or 'c++'.")
+    raise ValueError(f"Invalid inflation method: {method}. Use 'python' or 'cpp'.")
 
 
 def astar_search(cost_map: np.ndarray,
