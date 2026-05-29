@@ -7,7 +7,7 @@ A thin wrapper around two lists (nodes and edges) plus the covariance ->
 information conversion that the optimiser expects. The interesting code lives
 in slam_node.py (graph construction) and graph_optimizer.py (Gauss-Newton).
 """
-
+from typing import Any
 import numpy as np
 from typing import List, Tuple
 
@@ -24,8 +24,7 @@ class PoseGraph:
         self.nodes.append(pose.copy())
         return len(self.nodes) - 1
 
-    def add_edge(self, from_id: int, to_id: int,
-                 measurement: np.ndarray, covariance: np.ndarray):
+    def add_edge(self, from_id: int, to_id: int, measurement: np.ndarray, covariance: np.ndarray):
         """
         Add a constraint between two pose nodes.
 
@@ -47,3 +46,15 @@ class PoseGraph:
 
     def set_pose(self, node_id: int, pose: np.ndarray):
         self.nodes[node_id] = pose.copy()
+
+    def snapshot(self) -> dict[str, Any]:
+        """
+        Returns a raw copy of the current nodes and edges for optimization.
+
+        Returns:
+            dict[str, Any]: _description_
+        """
+        return {
+            'nodes': np.array(self.nodes, dtype=np.float64, copy=True),             # copy=True guarantees this memory is isolated from the live graph
+            'edges': [(f, t, m.copy(), o.copy()) for f, t, m, o in self.edges]      # Shallow copy the list, deep copy the numpy arrays inside the tuples
+        }

@@ -5,9 +5,11 @@ Publishes the optimized trajectory / path.
 """
 import numpy as np
 import time
-import multiprocessing
 import copy
-from typing import List, Tuple, Optional
+import queue
+import threading
+import multiprocessing
+from typing import List, Tuple, Optional, Any
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry, Path, OccupancyGrid as OccupancyGridMsg
@@ -24,11 +26,26 @@ from . import graph_optimizer
 
 from .motion_model import compute_motion_covariance
 
+# ---- C++ Extension (cpp) ----
+# Attempt to load the compiled
+# C++ extension
+try:
+    import succulence_cpp_optimizer
+    HAS_CPP_ENGINE = True
+except ImportError:
+    HAS_CPP_ENGINE = False
+    print("\n[WARNING] C++ Optimizer not found. Falling back to Python loop.\n")
+# ---------------------------
+
 class SlamEstimatorNode(Node):
     def __init__(self):
+        """
+        Initializes the SLAM Estimator node, loads configuration parameters, 
+        and sets up required publishers and subscribers.
+        """
         super().__init__('slam_estimator')
 
-        param_defaults: dict[str, str | int | float | bool] = {
+        param_defaults : dict[str, str | int | float | bool] = {
             'scan_topic': '/scan',                      # Physical raw Lidar
             'odom_topic': '/odom',                      # Physical raw Odometry
             'map_topic': '/succulence/map',
@@ -37,7 +54,7 @@ class SlamEstimatorNode(Node):
             'keyframe_scan_topic': '/succulence/slam/keyframe_scan',
             'map_version_topic': '/succulence/slam/version',
 
-            'c_engine': 'full',                         # Use C++ optimized scan-matching and optimization
+            'c_engine': 'cpp',                         # Use C++ optimized scan-matching and optimization
 
             'slam.keyframe_window': 100,                # Keyframe rendering window for map updates
             'slam.keyframe_distance': 0.06,             # High density for physical speed
@@ -60,6 +77,7 @@ class SlamEstimatorNode(Node):
             'scan_matcher.dilation_size': 3,
             'scan_matcher.coarse_search_multiplier': 4.0,
             'scan_matcher.min_score': 0.45,
+            'scan_matcher.laser_fov': 270.0,
             'scan_matcher.local_grid_size': 1000,
             'scan_matcher.local_grid_resolution': 0.025,
             'scan_matcher.edge_trim_degrees': 1.5,
@@ -77,6 +95,7 @@ class SlamEstimatorNode(Node):
             'occupancy_grid.log_odds_min': -5.0,
             'occupancy_grid.max_range': 7.5,
             'occupancy_grid.min_range': 0.1,
+            'occupancy_grid.laser_fov': 270.0,
             'occupancy_grid.edge_trim_degrees': 1.5,
             'occupancy_grid.edge_buffer_degrees': 3.0,
             'occupancy_grid.edge_min_weight': 0.1,
@@ -96,44 +115,56 @@ class SlamEstimatorNode(Node):
             self.declare_parameter(name, default_val)
 
         # tiny helper to fetch values safely and silence 'pylance'
-        def get_p(name: str):
+        def get_p(name : str):
+            """
+            Tiny helper to fetch values safely and silence 'pylance'.
+
+            Args:
+                name (str): _description_
+
+            Returns:
+                _type_: _description_
+            """
             val = self.get_parameter(name).value
             return val if val is not None else param_defaults[name]
 
-        scan_topic : str            = str(get_p('scan_topic'))
-        odom_topic : str            = str(get_p('odom_topic'))
-        map_topic : str             = str(get_p('map_topic'))
-        slam_odom_topic : str       = str(get_p('slam_odometry_topic'))
-        slam_path_topic : str       = str(get_p('slam_path_topic'))
-        self.keyframe_scan_topic    = str(get_p('keyframe_scan_topic'))         # Define topic for filtered keyframe scans
-        self.map_version_topic      = str(get_p('map_version_topic'))           # Define topic for map versioning
+        scan_topic : str                = str(get_p('scan_topic'))
+        odom_topic : str                = str(get_p('odom_topic'))
+        map_topic : str                 = str(get_p('map_topic'))
+        slam_odom_topic : str           = str(get_p('slam_odometry_topic'))
+        slam_path_topic : str           = str(get_p('slam_path_topic'))
+        self.keyframe_scan_topic : str  = str(get_p('keyframe_scan_topic'))         # Define topic for filtered keyframe scans
+        self.map_version_topic : str    = str(get_p('map_version_topic'))           # Define topic for map versioning
 
-        c_engine_mode : str         = str(get_p('c_engine')).lower()
-        if c_engine_mode == 'full':
-            self.c_engine = True
-        else:
-            self.c_engine = False
+        # Get chosen processing mode
+        c_engine_mode : str             = str(get_p('c_engine')).lower()
+        self.c_engine : str             = ''
+        if c_engine_mode == 'cpp':
+            self.c_engine = c_engine_mode
+        elif c_engine_mode == 'full':
+            self.c_engine = c_engine_mode
+            
 
-        self.keyframe_window        = int(get_p('slam.keyframe_window'))
-        self.keyframe_distance      = float(get_p('slam.keyframe_distance'))
-        self.keyframe_angle         = float(get_p('slam.keyframe_angle'))
-        self.optimization_interval  = int(get_p('slam.optimization_interval'))
-        self.num_iterations         = int(get_p('slam.num_iterations'))
-        self.scan_match_cov_xy      = float(get_p('slam.scan_match_cov_xy'))
-        self.scan_match_cov_theta   = float(get_p('slam.scan_match_cov_theta'))
+        self.keyframe_window : int          = int(get_p('slam.keyframe_window'))
+        self.keyframe_distance : float      = float(get_p('slam.keyframe_distance'))
+        self.keyframe_angle : float         = float(get_p('slam.keyframe_angle'))
+        self.optimization_interval : int    = int(get_p('slam.optimization_interval'))
+        self.num_iterations : int           = int(get_p('slam.num_iterations'))
+        self.scan_match_cov_xy : float      = float(get_p('slam.scan_match_cov_xy'))
+        self.scan_match_cov_theta : float   = float(get_p('slam.scan_match_cov_theta'))
         # Map-Scan Weighting
-        self.map_match_weight       = float(get_p('slam.map_match_weight'))
-        self.maturity_threshold     = float(get_p('slam.maturity_threshold'))
-        self.scan_rate_limit        = float(get_p('slam.scan_rate_limit'))
+        self.map_match_weight : float       = float(get_p('slam.map_match_weight'))
+        self.maturity_threshold : float     = float(get_p('slam.maturity_threshold'))
+        self.scan_rate_limit : float        = float(get_p('slam.scan_rate_limit'))
 
-        self.alpha1 = float(get_p('motion_model.alpha1'))
-        self.alpha2 = float(get_p('motion_model.alpha2'))
-        self.alpha3 = float(get_p('motion_model.alpha3'))
-        self.alpha4 = float(get_p('motion_model.alpha4'))
+        self.alpha1 : float = float(get_p('motion_model.alpha1'))
+        self.alpha2 : float = float(get_p('motion_model.alpha2'))
+        self.alpha3 : float = float(get_p('motion_model.alpha3'))
+        self.alpha4 : float = float(get_p('motion_model.alpha4'))
 
-        self.lidar_yaw_offset = float(get_p('lidar.yaw_offset'))
+        self.lidar_yaw_offset : float = float(get_p('lidar.yaw_offset'))
 
-        self.scan_matcher = ScanMatcher(
+        self.scan_matcher : ScanMatcher = ScanMatcher(
             search_x=float(get_p('scan_matcher.search_x')),
             search_y=float(get_p('scan_matcher.search_y')),
             search_theta=float(get_p('scan_matcher.search_theta')),
@@ -145,13 +176,14 @@ class SlamEstimatorNode(Node):
             local_grid_size=int(get_p('scan_matcher.local_grid_size')),
             local_grid_resolution=float(get_p('scan_matcher.local_grid_resolution')),
             min_score=float(get_p('scan_matcher.min_score')),
+            laser_fov=float(get_p('scan_matcher.laser_fov')),
             edge_trim_degrees=float(get_p('scan_matcher.edge_trim_degrees')),
             edge_buffer_degrees=float(get_p('scan_matcher.edge_buffer_degrees')),
             edge_min_weight=float(get_p('scan_matcher.edge_min_weight')),
             lidar_yaw_offset=float(get_p('lidar.yaw_offset')),
         )
 
-        self.occupancy_grid = OccupancyGrid(
+        self.occupancy_grid : OccupancyGrid = OccupancyGrid(
             resolution=float(get_p('occupancy_grid.resolution')),
             width=int(get_p('occupancy_grid.width')),
             height=int(get_p('occupancy_grid.height')),
@@ -163,6 +195,7 @@ class SlamEstimatorNode(Node):
             log_odds_min=float(get_p('occupancy_grid.log_odds_min')),
             max_range=float(get_p('occupancy_grid.max_range')),
             min_range=float(get_p('occupancy_grid.min_range')),
+            laser_fov=float(get_p('occupancy_grid.laser_fov')),
             edge_trim_degrees=float(get_p('occupancy_grid.edge_trim_degrees')),
             edge_buffer_degrees=float(get_p('occupancy_grid.edge_buffer_degrees')),
             edge_min_weight=float(get_p('occupancy_grid.edge_min_weight')),
@@ -171,37 +204,37 @@ class SlamEstimatorNode(Node):
             lidar_yaw_offset=float(get_p('lidar.yaw_offset')),
         )
 
-        self.pose_graph = PoseGraph()
+        self.pose_graph : PoseGraph = PoseGraph()
 
-        self.prev_odom_pose: Optional[np.ndarray] = None
-        self.current_odom_pose = np.array([0.0, 0.0, 0.0])
-        self.current_odom_cov = np.zeros((3, 3))
+        self.prev_odom_pose : Optional[np.ndarray] = None
+        self.current_odom_pose  = np.array([0.0, 0.0, 0.0])
+        self.current_odom_cov   = np.zeros((3, 3))
 
-        self.last_keyframe_pose: Optional[np.ndarray] = None
-        self.last_keyframe_scan: Optional[np.ndarray] = None
+        self.last_keyframe_pose : Optional[np.ndarray] = None
+        self.last_keyframe_scan : Optional[np.ndarray] = None
 
-        self.keyframe_timestamps = []
-        self.keyframe_count = 0
+        self.keyframe_timestamps : list = []
+        self.keyframe_count : int       = 0
 
-        self.last_scan_time = 0.0
+        self.last_scan_time : float     = 0.0
 
         # map version tracking
-        self.optimization_version = 0
-        self.active_map_version = 0
-        self.waiting_for_map_rebuild = False
-        self.map_data_arrived = False
+        self.optimization_version : int     = 0
+        self.active_map_version : int       = 0
+        self.waiting_for_map_rebuild : bool = False
+        self.map_data_arrived : bool        = False
 
         # Subscriptions
         self.odom_sub = self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
         self.scan_sub = self.create_subscription(LaserScan, scan_topic, self._scan_cb, 10)
 
-        self.map_sub = self.create_subscription(OccupancyGridMsg, map_topic, self._map_cb, 1)
+        self.map_sub     = self.create_subscription(OccupancyGridMsg, map_topic, self._map_cb, 1)
         self.map_ack_sub = self.create_subscription(Int32, '/succulence/map_ack', self._map_ack_cb, 10)
 
         # Publishers
-        self.odom_pub = self.create_publisher(Odometry, slam_odom_topic, 10)
-        self.path_pub = self.create_publisher(Path, slam_path_topic, 10)
-
+        self.odom_pub    = self.create_publisher(Odometry, slam_odom_topic, 10)
+        self.path_pub    = self.create_publisher(Path, slam_path_topic, 10)
+        
         self.version_pub = self.create_publisher(Int32, self.map_version_topic, 10)
 
         self.get_logger().info(f'Slam Estimator started — scan: {scan_topic}, odom: {odom_topic}')
@@ -211,11 +244,17 @@ class SlamEstimatorNode(Node):
         # Instantiate the publisher for sensor_msgs/msg/LaserScan
         self.keyframe_scan_pub = self.create_publisher(LaserScan, self.keyframe_scan_topic, 10)
 
+        # 
+        self.optimizer_lock = threading.Lock()
 
-    def _map_cb(self, msg: OccupancyGridMsg):
+
+    def _map_cb(self, msg : OccupancyGridMsg):
         """
         Receives the global map built by the Global Mapper node.
         Translates ROS probabilistic bytes (-1, 0..100) back to log-odds for Scan Matching.
+
+        Args:
+            msg (OccupancyGridMsg): The incoming occupancy grid message.
         """
         raw_data = np.array(msg.data, dtype=np.float32).reshape((msg.info.height, msg.info.width))
         
@@ -232,9 +271,13 @@ class SlamEstimatorNode(Node):
         self._check_map_synchronization_status()
     
 
-    def _map_ack_cb(self, msg: Int32):
+    def _map_ack_cb(self, msg : Int32):
         """
-        Receives confirmation from the Mapper that the map rebuild is complete.
+        Receives confirmation from the Mapper that the map rebuild is complete, 
+        unlocking the system to allow future scan-to-map matches.
+
+        Args:
+            msg (Int32): The version number of the newly published map.
         """
         self.active_map_version = msg.data
         self._check_map_synchronization_status()
@@ -254,7 +297,14 @@ class SlamEstimatorNode(Node):
                 )
 
 
-    def _odom_cb(self, msg: Odometry):
+    def _odom_cb(self, msg : Odometry):
+        """
+        Callback for incoming odometry messages. Computes the relative motion 
+        delta, propagates the motion covariance, and updates the live pose.
+
+        Args:
+            msg (Odometry): The incoming raw odometry message.
+        """
         odom_pose = self._odom_msg_to_pose(msg)
 
         if self.prev_odom_pose is None:
@@ -276,7 +326,14 @@ class SlamEstimatorNode(Node):
         self._publish_odometry()
 
 
-    def _scan_cb(self, msg: LaserScan):
+    def _scan_cb(self, msg : LaserScan):
+        """
+        Callback for incoming laser scans. Rate-limits the processing and 
+        triggers keyframe generation if the robot has moved sufficiently.
+
+        Args:
+            msg (LaserScan): The incoming laser scan message.
+        """
         if self.prev_odom_pose is None:
             return
 
@@ -291,17 +348,16 @@ class SlamEstimatorNode(Node):
             self._process_keyframe(msg)
 
 
-    def _should_add_keyframe(self, current_pose: np.ndarray,
-                              last_keyframe_pose: np.ndarray) -> bool:
+    def _should_add_keyframe(self, current_pose : np.ndarray, last_keyframe_pose : np.ndarray) -> bool:
         """
-        Return True once the robot has translated or rotated past the thresholds.
-
+        Returns True once the robot has translated or rotated past the configured thresholds.
+        
         Args:
-            current_pose (np.ndarray): _description_
-            last_keyframe_pose (np.ndarray): _description_
-
+            current_pose (np.ndarray): The robot's current estimated odometry pose [x, y, theta].
+            last_keyframe_pose (np.ndarray): The pose of the last recorded keyframe [x, y, theta].
+        
         Returns:
-            bool: _description_
+            bool: True if a new keyframe should be generated, False otherwise.
         """
         dx = current_pose[0] - last_keyframe_pose[0]
         dy = current_pose[1] - last_keyframe_pose[1]
@@ -312,10 +368,11 @@ class SlamEstimatorNode(Node):
 
     def _process_keyframe(self, scan_msg: LaserScan):
         """
-        Core SLAM loop: add node, add edges (odom + scan-match + map-match), optimise.
+        Core SLAM loop: adds a new node to the graph, calculates constraints 
+        (odom + scan-match + map-match), and triggers background optimization if required.
 
         Args:
-            scan_msg (LaserScan): _description_
+            scan_msg (LaserScan): The incoming laser scan message to process.
         """
         # Ensure map exists before matching
         if self.occupancy_grid.grid is None and self.pose_graph.get_num_nodes() > 0:
@@ -327,95 +384,110 @@ class SlamEstimatorNode(Node):
             ranges, scan_msg.angle_min, angle_increment,
             min_range=self.occupancy_grid.min_range,
             max_range=self.occupancy_grid.max_range,
-            lidar_yaw_offset=self.lidar_yaw_offset)
+            lidar_yaw_offset=self.lidar_yaw_offset
+        )
 
-        node_id = self.pose_graph.add_node(self.current_odom_pose)
+        # [PROTECT] Graph additions must be locked to prevent collisions with the deepcopy
+        with self.optimizer_lock:
+            node_id = self.pose_graph.add_node(self.current_odom_pose)
 
-        if self.last_keyframe_pose is not None and self.last_keyframe_scan is not None:
-            odom_relative = utils.pose_difference(
-                self.last_keyframe_pose, self.current_odom_pose)
+            if self.last_keyframe_pose is not None and self.last_keyframe_scan is not None:
+                odom_relative = utils.pose_difference(self.last_keyframe_pose, self.current_odom_pose)
 
-            # 1. Relative Scan-to-Scan Matching
-            matched_pose, match_cov, match_score = self.scan_matcher.match(
-                self.last_keyframe_scan, scan_points, odom_relative)
-
-            # 2. Absolute Scan-to-Map Matching
-            map_matched_global = None
-            map_match_score = 0.0
-
-            if self.active_map_version == self.optimization_version and not self.waiting_for_map_rebuild and self.map_data_arrived:
-                map_matched_global, map_match_cov, map_match_score = self.scan_matcher.match_to_map(
-                    occupancy_grid=self.occupancy_grid,
+                # 1. Relative Scan-to-Scan Matching
+                matched_pose, match_cov, match_score = self.scan_matcher.match(
+                    scan_ref=self.last_keyframe_scan,
                     scan_new=scan_points,
-                    initial_guess_global=self.current_odom_pose
+                    initial_guess=odom_relative
                 )
 
-            # Detect search-window saturation
-            sx = self.scan_matcher.search_x
-            sy = self.scan_matcher.search_y
-            st = self.scan_matcher.search_theta
-            shift = matched_pose - odom_relative
-            saturated = (abs(shift[0]) >= 0.95 * sx or
-                         abs(shift[1]) >= 0.95 * sy or
-                         abs(shift[2]) >= 0.95 * st)
+                # 2. Absolute Scan-to-Map Matching
+                map_matched_global = None
+                map_match_score = 0.0
 
-            # Odometry edge
-            odom_cov = compute_motion_covariance(
-                odom_relative, self.alpha1, self.alpha2,
-                self.alpha3, self.alpha4)
-            for i in range(3):
-                odom_cov[i, i] = max(odom_cov[i, i], self.current_odom_cov[i, i], 1e-4)
+                if self.active_map_version == self.optimization_version and not self.waiting_for_map_rebuild and self.map_data_arrived:
+                    map_matched_global, map_match_cov, map_match_score = self.scan_matcher.match_to_map(
+                        occupancy_grid=self.occupancy_grid,
+                        scan_new=scan_points,
+                        initial_guess_global=self.current_odom_pose
+                    )
 
-            self.pose_graph.add_edge(node_id - 1, node_id, odom_relative, odom_cov)
+                # Detect search-window saturation
+                sx = self.scan_matcher.search_x
+                sy = self.scan_matcher.search_y
+                st = self.scan_matcher.search_theta
+                shift = matched_pose - odom_relative
+                saturated = (
+                    abs(shift[0]) >= 0.95 * sx or
+                    abs(shift[1]) >= 0.95 * sy or
+                    abs(shift[2]) >= 0.95 * st
+                )
 
-            # map_match_ratio is the % of scan points hitting confirmed obstacles in the map.
-            map_match_ratio = map_match_score
-
-            # trust_multiplier ramps trust from 0.0 to 1.0 as ratio approaches maturity_threshold.
-            trust_multiplier = min(1.0, map_match_ratio / self.maturity_threshold)
-            
-            # effective_map_weight is the final blending ratio (e.g., 0.3 * 0.5 maturity = 0.15 trust).
-            effective_map_weight = self.map_match_weight * trust_multiplier
-
-            # Add Scan-to-Scan Edge
-            if match_score > self.scan_matcher.min_score and not saturated:
-                match_cov[0, 0] = max(match_cov[0, 0], self.scan_match_cov_xy)
-                match_cov[1, 1] = max(match_cov[1, 1], self.scan_match_cov_xy)
-                match_cov[2, 2] = max(match_cov[2, 2], self.scan_match_cov_theta)
+                # Odometry edge
+                odom_cov = compute_motion_covariance(
+                    odom_relative,
+                    self.alpha1, self.alpha2,
+                    self.alpha3, self.alpha4
+                )
                 
-                # Scale covariance by relative weight (lower weight = higher covariance/less trust)
-                match_cov /= (1.0 - effective_map_weight + 1e-6)
-                
-                self.pose_graph.add_edge(node_id - 1, node_id, matched_pose, match_cov)
+                for i in range(3):
+                    odom_cov[i, i] = max(odom_cov[i, i], self.current_odom_cov[i, i], 1e-4)
 
-                #self.get_logger().info(
-                #    f'  Scan-match accepted: score={match_score:.3f}, '
-                #    f'shift=[{shift[0]:+.3f}, {shift[1]:+.3f}, {shift[2]:+.3f}]')
-                
-            elif saturated:
-                self.get_logger().warn(
-                    f'  Scan-match SATURATED (boundary): score={match_score:.3f}, '
-                    f'shift=[{shift[0]:+.3f}, {shift[1]:+.3f}, {shift[2]:+.3f}] '
-                    f'-- weakened odom edge, no scan-match edge')
+                self.pose_graph.add_edge(node_id - 1, node_id, odom_relative, odom_cov)
 
-            # Add Scan-to-Map Edge
-            if map_match_score > self.scan_matcher.min_score and effective_map_weight > 0.01:
-                map_match_cov[0, 0] = max(map_match_cov[0, 0], self.scan_match_cov_xy)
-                map_match_cov[1, 1] = max(map_match_cov[1, 1], self.scan_match_cov_xy)
-                map_match_cov[2, 2] = max(map_match_cov[2, 2], self.scan_match_cov_theta)
-                
-                # Scale covariance by absolute map weight
-                map_match_cov /= (effective_map_weight + 1e-6)
+                # map_match_ratio: Percentage (%) of scan points hitting confirmed obstacles in map
+                map_match_ratio = map_match_score
 
-                # Compute relative measurement from Node 0 to the global map-matched pose
-                map_match_measurement = utils.pose_difference(self.pose_graph.nodes[0], map_matched_global)
+                # trust_multiplier: Ramps trust from 0.0 to 1.0 as ratio approaches maturity_threshold
+                trust_multiplier = min(1.0, map_match_ratio / self.maturity_threshold)
                 
-                # Absolute constraint: Edge from origin (Node 0) to current node
-                self.pose_graph.add_edge(0, node_id, map_match_measurement, map_match_cov)
+                # effective_map_weight: Final blending ratio (e.g., 0.3 * 0.5 maturity = 0.15 trust)
+                effective_map_weight = self.map_match_weight * trust_multiplier
 
-                #self.get_logger().info(
-                #    f'  Map-match accepted: ratio={map_match_ratio:.2f}, '
-                #    f'effective_weight={effective_map_weight:.2f}')
+                # Add Scan-to-Scan Edge
+                if match_score > self.scan_matcher.min_score and not saturated:
+                    match_cov[0, 0] = max(match_cov[0, 0], self.scan_match_cov_xy)
+                    match_cov[1, 1] = max(match_cov[1, 1], self.scan_match_cov_xy)
+                    match_cov[2, 2] = max(match_cov[2, 2], self.scan_match_cov_theta)
+                    
+                    # Scale covariance by relative weight (lower weight = higher covariance/less trust)
+                    match_cov /= (1.0 - effective_map_weight + 1e-6)
+                    
+                    self.pose_graph.add_edge(node_id - 1, node_id, matched_pose, match_cov)
+
+                    """
+                    self.get_logger().info(
+                        f'  Scan-match accepted: score={match_score:.3f}, '
+                        f'shift=[{shift[0]:+.3f}, {shift[1]:+.3f}, {shift[2]:+.3f}]'
+                    )
+                    """
+                    
+                elif saturated:
+                    self.get_logger().warn(
+                        f'  Scan-match SATURATED (boundary): score={match_score:.3f}, '
+                        f'shift=[{shift[0]:+.3f}, {shift[1]:+.3f}, {shift[2]:+.3f}] '
+                        f'-- weakened odom edge, no scan-match edge')
+
+                # Add Scan-to-Map Edge
+                if map_match_score > self.scan_matcher.min_score and effective_map_weight > 0.01:
+                    map_match_cov[0, 0] = max(map_match_cov[0, 0], self.scan_match_cov_xy)
+                    map_match_cov[1, 1] = max(map_match_cov[1, 1], self.scan_match_cov_xy)
+                    map_match_cov[2, 2] = max(map_match_cov[2, 2], self.scan_match_cov_theta)
+                    
+                    # Scale covariance by absolute map weight
+                    map_match_cov /= (effective_map_weight + 1e-6)
+
+                    # Compute relative measurement from Node 0 to the global map-matched pose
+                    map_match_measurement = utils.pose_difference(self.pose_graph.nodes[0], map_matched_global)
+                    
+                    # Absolute constraint: Edge from origin (Node 0) to current node
+                    self.pose_graph.add_edge(0, node_id, map_match_measurement, map_match_cov)
+
+                    """
+                    self.get_logger().info(
+                        f'  Map-match accepted: ratio={map_match_ratio:.4f}, '
+                        f'effective_weight={effective_map_weight:.4f}')
+                    """
 
         self.last_keyframe_pose = self.current_odom_pose.copy()
         self.last_keyframe_scan = scan_points
@@ -438,57 +510,109 @@ class SlamEstimatorNode(Node):
                 f'{self.pose_graph.get_num_nodes()} nodes, '
                 f'{self.pose_graph.get_num_edges()} edges')
             
-        # self.get_logger().info(f'🏁 Keyframe Processing Finished at {self.get_clock().now().nanoseconds / 1e9:.2f}')
+        # self.get_logger().info(f'🏁 Keyframe Processing Finished at {self.get_clock().now().nanoseconds / 1e9:.4f}')
+
 
     def _run_optimizer(self):
+        """
+        Triggers the optimization process in the background using a detached 
+        snapshot to prevent blocking the main ROS thread.
+        """
         # Prevent spawning multiple optimizers if one is already running
         if hasattr(self, 'optimizing') and self.optimizing:
             return
         
         # Explicitly set flag to force keyframes to bypass map matching until global_mapper refreshes
         self.waiting_for_map_rebuild = True
-
         self.map_data_arrived = False
-
         self.optimizing = True
+
         num_nodes = self.pose_graph.get_num_nodes()
         optimize_quantity = min(self.keyframe_window, num_nodes)
         self.get_logger().info(
             f'Optimising ({optimize_quantity}/{num_nodes} nodes, '
             f'{self.pose_graph.get_num_edges()} edges)...')
 
-        # Create a communication channel
-        self.opt_queue = multiprocessing.Queue()
+        # 1. Snapshot old state
+        with self.optimizer_lock:           # LOCKED: Prevent collision with incoming callbacks
+            snapshot_graph = self.pose_graph.snapshot()
 
-        p = multiprocessing.Process(target=run_optimization_process, args=(self.pose_graph, self.num_iterations, self.keyframe_window, self.opt_queue, self.c_engine))
+        if self.c_engine == 'cpp':
+            # 2.a Create communication channel
+            self.opt_queue = queue.Queue()
+        else:
+            # 2.b Create communication channel
+            self.opt_queue = multiprocessing.Queue()
+        
+        # Define optimisation arguments (DRY Principles)
+        args : tuple = snapshot_graph, self.num_iterations, self.keyframe_window, self.opt_queue, self.c_engine
+
+        if self.c_engine == 'cpp':
+            # 3.a Spawn thread (Zero serialization cost)
+            p = threading.Thread(target=run_optimization_process, args=args, daemon=True)
+        else:
+            # 3.b Spawn separate process to run optimization (prevents thread blocking)
+            p = multiprocessing.Process(target=run_optimization_process, args=args)
+
+        # SAFTEY: Catch failed threading/multiprocessor
+        if not p:
+            return
+        
+        # 4. Start threading/multiprocessor
         p.start()
 
-        # Create a fast, non-blocking timer to check for the result
-        self.opt_timer = self.create_timer(0.1, self._check_optimizer_result)
+        # 5. Create fast, non-blocking timer to check for result on the main thread
+        self.opt_timer = self.create_timer(0.1, self._poll_queue)
+
+
+    def _poll_queue(self):
+        """
+        Timer callback for background processes.
+        Checks if the optimization process has put the result in the queue.
+        """
+        try:
+            # Grab background process result
+            optimized_graph, duration = self.opt_queue.get(block=False)
+
+            # Cancel timer
+            self.opt_timer.cancel()
+            self.destroy_timer(self.opt_timer)
+            
+            # Merge results and update state
+            self._check_optimizer_result(optimized_graph, duration)
+
+        except queue.Empty:
+            # Note: multiprocessing.Queue shares the same Empty exception class
+            pass
 
     
-    def _check_optimizer_result(self):
-        # If background process have put the result in queue, grab it!
-        if not self.opt_queue.empty():
-            optimized_graph, duration = self.opt_queue.get()
+    def _check_optimizer_result(self, optimized_graph, duration=0.0):
+        """
+        Unified results merger. Accepts an optimized graph dictionary and applies the 
+        drift correction delta to the live pose graph safely.
 
-            # Guard
-            if optimized_graph.get_num_nodes() == 0:
-                self.optimizing = False
-                self.opt_timer.cancel()
-                return
-            
-            # Determine size of historical snapshot that was optimised
-            num_optimized_nodes = optimized_graph.get_num_nodes()
+        Args:
+            optimized_graph (dict): Dictionary containing the optimized 'nodes' and 'edges'.
+            duration (float, optional): Optimization execution time in seconds. Defaults to 0.0.
+        """
+        # Guard against empty/malformed results
+        if optimized_graph is None or len(optimized_graph['nodes']) == 0:
+            self.optimizing = False
+            return
 
-            # 1. Calculate 'snap' delta (How much did last node move?)
+        # Determine size of historical snapshot that was optimised
+        num_optimized_nodes = len(optimized_graph['nodes'])
+
+        # PROTECT: Wrap the entire modification phase in the lock
+        with self.optimizer_lock:
+            # 1. Calculate 'snap' delta using the snapshot
             old_boundary_node = self.pose_graph.nodes[num_optimized_nodes - 1]
-            new_boundary_node = optimized_graph.nodes[num_optimized_nodes - 1]
+            new_boundary_node = optimized_graph['nodes'][-1]
             correction_delta = utils.pose_difference(old_boundary_node, new_boundary_node)
 
             # 2. Safely swap drifting graph for newly solved graph
             for i in range(num_optimized_nodes):
-                self.pose_graph.nodes[i] = optimized_graph.nodes[i].copy()
+                self.pose_graph.nodes[i] = optimized_graph['nodes'][i].copy()
 
             # 3. Propagate correction delta to any new keyframes accumulated
             for i in range(num_optimized_nodes, len(self.pose_graph.nodes)):
@@ -499,21 +623,39 @@ class SlamEstimatorNode(Node):
 
             # 5. Apply correction delta to LIVE odometry
             self.current_odom_pose = utils.pose_compose(self.current_odom_pose, correction_delta)
-            
-            # 6. Publish the new path BEFORE triggering the Mapper's version ACK
-            self._publish_path()
+        
+        # 6. Publish the new path BEFORE triggering the Mapper's version ACK
+        self._publish_path()
 
-            # 7. Increment map version and broadcast
-            self.optimization_version += 1
-            self.version_pub.publish(Int32(data=self.optimization_version))
-            self.get_logger().info(f'🏁 Optimisation merged successfully, took {duration:.2f}s')
-            
-            # 8. Clean up
-            self.optimizing = False
-            self.opt_timer.cancel()
+        # 7. Increment map version and broadcast
+        self.optimization_version += 1
+        self.version_pub.publish(Int32(data=self.optimization_version))
+
+        # Determine engine naming for logging
+        engine_str : str = 'Python Loop'
+        if self.c_engine == 'cpp' and HAS_CPP_ENGINE:
+            engine_str = 'C++ Engine'
+        elif self.c_engine == 'full':
+            engine_str = 'C++ Loop'
+
+        if engine_str != 'C++ Engine':
+            self.get_logger().warn(f'[WARNING] Failed to load C++ Optimiser.')
+        self.get_logger().info(f'🏁 Optimisation merged successfully ({engine_str}), took {duration:.4f}s')
+        
+        # 8. Clean up
+        self.optimizing = False
 
     
     def _odom_msg_to_pose(self, msg: Odometry) -> np.ndarray:
+        """
+        Extracts a 2D pose array (x, y, yaw) from a ROS 2 Odometry message.
+
+        Args:
+            msg (Odometry): The incoming odometry message.
+
+        Returns:
+            np.ndarray: A 1D array containing [x, y, theta].
+        """
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         quat = msg.pose.pose.orientation
@@ -522,11 +664,30 @@ class SlamEstimatorNode(Node):
 
 
     def _yaw_to_quaternion(self, yaw: float) -> Quaternion:
+        """
+        Converts a scalar yaw angle (radians) to a ROS 2 geometry_msgs Quaternion.
+
+        Args:
+            yaw (float): Rotation around the Z-axis in radians.
+
+        Returns:
+            Quaternion: The resulting quaternion message.
+        """
         q = Rotation.from_euler('z', yaw).as_quat(canonical=False)
         return Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
 
     def _3x3_to_6x6_covariance(self, cov_3x3: np.ndarray) -> list:
+        """
+        Expands a 2D 3x3 covariance matrix (x, y, yaw) into a flat 36-element 
+        list representing a 6x6 covariance matrix for ROS 2 messages.
+
+        Args:
+            cov_3x3 (np.ndarray): The 3x3 covariance matrix.
+
+        Returns:
+            list: A 36-element list with the mapped variances and covariances.
+        """
         cov = [0.0] * 36
         cov[0] = cov_3x3[0, 0]
         cov[1] = cov_3x3[0, 1]
@@ -537,6 +698,11 @@ class SlamEstimatorNode(Node):
 
 
     def _publish_odometry(self):
+        """
+        Publishes the live, drift-corrected odometry of the robot in the map frame.
+        Calculates real-time pose by composing the latest graph keyframe with 
+        the high-frequency odometry delta.
+        """
         if self.pose_graph.get_num_nodes() > 0:
             last_graph_pose = self.pose_graph.nodes[-1]
             if self.last_keyframe_pose is not None:
@@ -573,6 +739,10 @@ class SlamEstimatorNode(Node):
 
 
     def _publish_path(self):
+        """
+        Constructs and publishes a nav_msgs/Path message representing the optimized 
+        trajectory of the robot, attaching historical timestamps to each pose.
+        """
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
         path_msg.header.frame_id = 'map'
@@ -599,14 +769,17 @@ class SlamEstimatorNode(Node):
 
 
 
-def run_optimization_process(graph, num_iterations, window_size, result_queue, c_engine=False):
+def run_optimization_process(graph, num_iterations, window_size, result_queue, c_engine=''):
     """
-    Runs isolated from the ROS node to prevent Pickling errors.
+    Standalone wrapper function to execute the optimizer.
+    Isolates execution from the ROS node to prevent Pickling errors during multiprocessing.
 
     Args:
-        graph (_type_): _description_
-        num_iterations (_type_): _description_
-        result_queue (_type_): _description_
+        graph (dict): The snapshot dictionary containing nodes and edges.
+        num_iterations (int): Number of optimization iterations to run.
+        window_size (int): Local window size for anchoring nodes.
+        result_queue (queue.Queue | multiprocessing.Queue): Target queue to push results into.
+        c_engine (str): Flag indicating which backend engine to use.
     """
     t0 = time.monotonic()
     
@@ -617,6 +790,13 @@ def run_optimization_process(graph, num_iterations, window_size, result_queue, c
 
 
 def main(args=None):
+    """
+    Entry point for the SlamEstimatorNode. Initializes ROS 2, spins the node, 
+    and handles clean shutdown and final logging.
+
+    Args:
+        args (list, optional): Command-line arguments passed to rclpy.init. Defaults to None.
+    """
     rclpy.init(args=args)
     node = SlamEstimatorNode()
     try:

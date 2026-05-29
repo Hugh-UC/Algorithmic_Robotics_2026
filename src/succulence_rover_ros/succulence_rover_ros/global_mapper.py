@@ -6,12 +6,15 @@ Constructs and publishes the Occupancy Grid without blocking the Estimator node.
 
 Usage: This node runs concurrently with the slam_estimator node to build
        and maintain a ghost-wall-free occupancy grid map from optimized keyframe poses.
+
+Features: A C++ acceleration engine for instantaneous map rebuilds.
 """
 import numpy as np
 import time
 import threading
 import copy
 import rclpy
+from typing import Any
 from rclpy.node import Node, Optional
 from nav_msgs.msg import Path, OccupancyGrid as OccupancyGridMsg
 from sensor_msgs.msg import LaserScan
@@ -20,6 +23,17 @@ from std_msgs.msg import Int32
 from scipy.spatial.transform import Rotation
 
 from .occupancy_grid_mapper import OccupancyGrid
+
+# ---- C++ Extension (cpp) ----
+# Attempt to load the compiled
+# C++ extension
+try:
+    import succulence_cpp_mapper
+    HAS_CPP_MAPPER = True
+except ImportError:
+    HAS_CPP_MAPPER = False
+    print("\n[WARNING] C++ Mapper not found. Falling back to slow Python loop.\n")
+# -----------------------------
 
 class GlobalMapperNode(Node):
     def __init__(self):
@@ -33,6 +47,8 @@ class GlobalMapperNode(Node):
             'slam_path_topic': '/succulence/slam/path',
             'keyframe_scan_topic': '/succulence/slam/keyframe_scan',
             'map_version_topic': '/succulence/slam/version',
+
+            'c_engine': 'cpp',                         # Use C++ optimized scan-matching and optimization
             
             'slam.keyframe_window': 100,                # Keyframe rendering window for map updates
             'slam.map_publish_interval': 0.3,           # Fast refresh for physical safety
@@ -49,6 +65,7 @@ class GlobalMapperNode(Node):
             'occupancy_grid.log_odds_min': -5.0,
             'occupancy_grid.max_range': 7.5,
             'occupancy_grid.min_range': 0.1,
+            'occupancy_grid.laser_fov': 270.0,
             'occupancy_grid.edge_trim_degrees': 1.5,
             'occupancy_grid.edge_buffer_degrees': 3.0,
             'occupancy_grid.edge_min_weight': 0.1,
@@ -75,6 +92,8 @@ class GlobalMapperNode(Node):
         self.keyframe_scan_topic    = str(get_p('keyframe_scan_topic'))         # Define topic for filtered keyframe scans
         self.map_version_topic      = str(get_p('map_version_topic'))           # Define topic for map versioning
 
+        self.c_engine               = str(get_p('c_engine')).lower()
+
         self.keyframe_window        = int(get_p('slam.keyframe_window'))
 
         # Memory buffer for historical laser scans
@@ -82,26 +101,30 @@ class GlobalMapperNode(Node):
         self.scan_buffer = {}
         self.scan_buffer_max_size = int(get_p('slam.scan_buffer_max_size'))
 
+        # Cache C++ engine parameters explicitly to avoid Python getattr() failures later
+        self.cpp_params : dict[str, Any] = {
+            'resolution':           float(get_p('occupancy_grid.resolution')),
+            'width':                int(get_p('occupancy_grid.width')),
+            'height':               int(get_p('occupancy_grid.height')),
+            'origin_x':             float(get_p('occupancy_grid.origin_x')),
+            'origin_y':             float(get_p('occupancy_grid.origin_y')),
+            'log_odds_occupied':    float(get_p('occupancy_grid.log_odds_occupied')),
+            'log_odds_free':        float(get_p('occupancy_grid.log_odds_free')),
+            'log_odds_max':         float(get_p('occupancy_grid.log_odds_max')),
+            'log_odds_min':         float(get_p('occupancy_grid.log_odds_min')),
+            'max_range':            float(get_p('occupancy_grid.max_range')),
+            'min_range':            float(get_p('occupancy_grid.min_range')),
+            'laser_fov':            float(get_p('occupancy_grid.laser_fov')),
+            'edge_trim_degrees':    float(get_p('occupancy_grid.edge_trim_degrees')),
+            'edge_buffer_degrees':  float(get_p('occupancy_grid.edge_buffer_degrees')),
+            'edge_min_weight':      float(get_p('occupancy_grid.edge_min_weight')),
+            'lidar_x_offset':       float(get_p('lidar.x_offset')),
+            'lidar_y_offset':       float(get_p('lidar.y_offset')),
+            'lidar_yaw_offset':     float(get_p('lidar.yaw_offset'))
+        }
+
         # Init Grid Map (Use your params here)
-        self.occupancy_grid = OccupancyGrid(
-            resolution=float(get_p('occupancy_grid.resolution')),
-            width=int(get_p('occupancy_grid.width')),
-            height=int(get_p('occupancy_grid.height')),
-            origin_x=float(get_p('occupancy_grid.origin_x')),
-            origin_y=float(get_p('occupancy_grid.origin_y')),
-            log_odds_occupied=float(get_p('occupancy_grid.log_odds_occupied')),
-            log_odds_free=float(get_p('occupancy_grid.log_odds_free')),
-            log_odds_max=float(get_p('occupancy_grid.log_odds_max')),
-            log_odds_min=float(get_p('occupancy_grid.log_odds_min')),
-            max_range=float(get_p('occupancy_grid.max_range')),
-            min_range=float(get_p('occupancy_grid.min_range')),
-            edge_trim_degrees=float(get_p('occupancy_grid.edge_trim_degrees')),
-            edge_buffer_degrees=float(get_p('occupancy_grid.edge_buffer_degrees')),
-            edge_min_weight=float(get_p('occupancy_grid.edge_min_weight')),
-            lidar_x_offset=float(get_p('lidar.x_offset')),
-            lidar_y_offset=float(get_p('lidar.y_offset')),
-            lidar_yaw_offset=float(get_p('lidar.yaw_offset')),
-        )
+        self.occupancy_grid : OccupancyGrid  = OccupancyGrid(**self.cpp_params)
 
         self.last_path_len = 0
         self.cached_poses = []
@@ -118,8 +141,8 @@ class GlobalMapperNode(Node):
         self.create_subscription(Path, self.slam_path_topic, self._path_cb, 10)
 
         self.map_pub = self.create_publisher(OccupancyGridMsg, self.map_topic, 10)
-
-        self.map_timer = self.create_timer(map_publish_interval, self._publish_map)
+        self.create_subscription(Path, '/succulence/slam/shadow_path', self._path_cb, 10)   # Subscribe to dedicated shadow path topic
+        # self.map_timer = self.create_timer(map_publish_interval, self._publish_map)
 
         self.version_sub = self.create_subscription(Int32, self.map_version_topic, self._version_cb, 10)
         self.map_ack_pub = self.create_publisher(Int32, '/succulence/map_ack', 10)
@@ -134,10 +157,10 @@ class GlobalMapperNode(Node):
         Updates the internal target version when the Estimator finishes optimizing.
         """
         self.target_map_version = msg.data
-        self.get_logger().info(f"Master optimisation v{self.target_map_version} received. Triggering map rebuild.")
+        self.get_logger().info(f"⬇️ Master optimisation v{self.target_map_version} received. Triggering map rebuild.")
 
         if self.latest_path_msg is not None:
-             threading.Thread(target=self._rebuild_map, args=(self.latest_path_msg,), daemon=True).start()
+            threading.Thread(target=self._rebuild_map, args=(self.latest_path_msg,), daemon=True).start()
 
 
     def _scan_cb(self, msg: LaserScan):
@@ -229,31 +252,92 @@ class GlobalMapperNode(Node):
             poses_to_render = path_msg.poses
         
         # 2. Create an independent 'off-screen' mapper for the background thread
-        bg_mapper = copy.deepcopy(self.occupancy_grid)
+        bg_mapper = self.occupancy_grid.snapshot()
         bg_mapper.grid.fill(0.0)
         
         # 3. Render all keyframes into the background grid using the Path message
         n_rendered = 0
-        for pose_stamped in poses_to_render:
-            stamp_nanos = pose_stamped.header.stamp.sec * 1000000000 + pose_stamped.header.stamp.nanosec
+        # --- 3A: C++ HIGH PERFORMANCE ENGINE ---
+        if HAS_CPP_MAPPER and self.c_engine == 'cpp':
+            valid_poses = []
+            valid_scans = []
 
-            if stamp_nanos not in self.scan_buffer:
-                self.get_logger().warn(f"Skipping keyframe pose; scan {stamp_nanos} not found in buffer.")
-                continue
-            
-            if stamp_nanos in self.scan_buffer:
-                scan_msg = self.scan_buffer[stamp_nanos]
-                x = pose_stamped.pose.position.x
-                y = pose_stamped.pose.position.y
-                yaw = self._quaternion_to_yaw(pose_stamped.pose.orientation)
+            expected_rays = None
+            first_scan_msg = None
+
+            for pose_stamped in poses_to_render:
+                stamp_nanos = pose_stamped.header.stamp.sec * 1000000000 + pose_stamped.header.stamp.nanosec
+                scan_msg = self._get_scan_at_time(stamp_nanos)
+
+                if scan_msg is None:
+                    self.get_logger().warn(f"Skipping keyframe pose; scan {stamp_nanos} not found in buffer.")
+                    continue
+
+                if expected_rays is None:
+                    expected_rays = len(scan_msg.ranges)
                 
-                bg_mapper.update(
-                    pose=np.array([x, y, yaw]), 
-                    ranges=np.array(scan_msg.ranges),
-                    angle_min=scan_msg.angle_min, 
-                    angle_increment=scan_msg.angle_increment
-                )
+                if len(scan_msg.ranges) != expected_rays:
+                    self.get_logger().warn(f"Dropping malformed scan: {len(scan_msg.ranges)} rays.")
+                    continue
+                
+                if first_scan_msg is None:
+                    first_scan_msg = scan_msg
+                
+                yaw = self._quaternion_to_yaw(pose_stamped.pose.orientation)
+                valid_poses.append([pose_stamped.pose.position.x, pose_stamped.pose.position.y, yaw])
+                valid_scans.append(scan_msg.ranges)
                 n_rendered += 1
+
+            if valid_poses and first_scan_msg:
+                poses_arr   = np.array(valid_poses, dtype=np.float64)
+                scans_arr   = np.array(valid_scans, dtype=np.float64)
+                
+                # Fetch directly from the instance to maintain a Single Source of Truth
+                origin_x    = bg_mapper.origin_x
+                origin_y    = bg_mapper.origin_y
+                resolution  = bg_mapper.resolution
+                r_min       = bg_mapper.min_range
+                r_max       = bg_mapper.max_range
+                l_occ       = bg_mapper.log_odds_occ
+                l_free      = abs(bg_mapper.log_odds_free) # Ensure positive for C++ subtraction
+                l_max       = bg_mapper.log_odds_max
+                l_min       = bg_mapper.log_odds_min
+                l_x         = bg_mapper.lidar_x_offset
+                l_y         = bg_mapper.lidar_y_offset
+                l_yaw       = bg_mapper.lidar_yaw_offset
+                fov_half    = bg_mapper.fov_half_rad
+                edge_trim   = bg_mapper.edge_trim_rad
+
+                succulence_cpp_mapper.rebuild_map_cpp(
+                    bg_mapper.grid, poses_arr, scans_arr,
+                    origin_x, origin_y, resolution,
+                    first_scan_msg.angle_min, first_scan_msg.angle_increment,
+                    r_min, r_max, l_occ, l_free, l_max, l_min, l_x, l_y, l_yaw,
+                    fov_half, edge_trim
+                )
+
+        # --- 3B: PYTHON LOOP FALLBACK ---
+        else:
+            for pose_stamped in poses_to_render:
+                stamp_nanos = pose_stamped.header.stamp.sec * 1000000000 + pose_stamped.header.stamp.nanosec
+
+                if stamp_nanos not in self.scan_buffer:
+                    self.get_logger().warn(f"Skipping keyframe pose; scan {stamp_nanos} not found in buffer.")
+                    continue
+                
+                if stamp_nanos in self.scan_buffer:
+                    scan_msg = self.scan_buffer[stamp_nanos]
+                    x = pose_stamped.pose.position.x
+                    y = pose_stamped.pose.position.y
+                    yaw = self._quaternion_to_yaw(pose_stamped.pose.orientation)
+                    
+                    bg_mapper.update(
+                        pose=np.array([x, y, yaw]), 
+                        ranges=np.array(scan_msg.ranges),
+                        angle_min=scan_msg.angle_min, 
+                        angle_increment=scan_msg.angle_increment
+                    )
+                    n_rendered += 1
             
         # 4. Atomically swap the fully built grid back to the live system!
         with self.rebuild_lock:
@@ -263,9 +347,21 @@ class GlobalMapperNode(Node):
             self.map_ready = True
 
         n_known = int(np.sum(np.abs(self.occupancy_grid.grid) > 0.1))
+
+        # Determine engine naming for logging
+        engine_str : str = 'Python Loop'
+        if self.c_engine == 'cpp' and HAS_CPP_MAPPER:
+            engine_str = 'C++ Engine'
+        elif self.c_engine == 'full':
+            engine_str = 'C++ Loop'
+
+        if engine_str != 'C++ Engine':
+            self.get_logger().warn(f'[WARNING] Failed to load C++ Mapper.')
+            
         self.get_logger().info(
-            f' 🏁 Background Map Rebuild Complete: {n_rendered} keyframes rendered, '
-            f'{n_known} known cells, {time.monotonic() - t0:.2f}s')
+            f' 🏁 Background Map Rebuild Complete ({engine_str}): {n_rendered} keyframes rendered, '
+            f'{n_known} known cells, {time.monotonic() - t0:.4f}s'
+        )
         
     
     def _publish_map(self):
@@ -285,9 +381,9 @@ class GlobalMapperNode(Node):
         n_known = int(np.sum(np.abs(self.occupancy_grid.grid) > 0.1))
 
         self.get_logger().info(
-            f' 🗺️ Map published: {n_known} known cells '
-            f'({100.0*n_known/self.occupancy_grid.grid.size:.2f}% of grid), '
-            f'{time.monotonic() - t0:.2f}s')
+            f' Map published: {n_known} known cells '
+            f'({100.0*n_known/self.occupancy_grid.grid.size:.4f}% of grid), '
+            f'{time.monotonic() - t0:.4f}s')
         
     def _quaternion_to_yaw(self, q: Quaternion) -> float:
         return Rotation.from_quat([q.x, q.y, q.z, q.w]).as_euler('xyz')[2]
