@@ -2,9 +2,9 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>succulence_rover_ros</name>
-  <version>0.1.0</version>
-  <description>SLAM and navigation package for the Succulence Rover — Algorithmic Robotics lab</description>
-  <maintainer email="maleen.jayasuriya@canberra.edu.au">Maleen Jayasuriya</maintainer>
+  <version>0.1.1</version>
+  <description>SLAM and Navigation Package for the Succulence Rover — Algorithmic Robotics lab</description>
+  <maintainer email="u3276400@uni.canberra.edu.au">Hugh Brennan</maintainer>
   <license>MIT</license>
 
   <!-- Core ROS2 dependencies -->
@@ -18,6 +18,10 @@
   <!-- Python scientific computing -->
   <depend>python3-numpy</depend>
   <depend>python3-scipy</depend>
+
+  <!-- C++ Extension Dependencies -->
+  <depend>python3-pybind11</depend>
+  <build_depend>libeigen3-dev</build_depend>
 
   <!-- Testing -->
   <test_depend>python3-pytest</test_depend>
