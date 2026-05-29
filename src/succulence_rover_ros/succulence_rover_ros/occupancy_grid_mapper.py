@@ -76,7 +76,6 @@ class OccupancyGrid:
       - L < 0  means likely free
       - Updates are additive: L_new = L_old + L_update
     """
-
     def __init__(self,
                  resolution: float,
                  width: int,
@@ -89,6 +88,7 @@ class OccupancyGrid:
                  log_odds_min: float,
                  max_range: float,
                  min_range: float,
+                 laser_fov: float,
                  edge_trim_degrees: float,
                  edge_buffer_degrees: float,
                  edge_min_weight: float,
@@ -110,7 +110,7 @@ class OccupancyGrid:
         self.edge_trim_rad          = np.radians(edge_trim_degrees) 
         self.edge_buffer_rad        = np.radians(edge_buffer_degrees)
         self.edge_min_weight        = edge_min_weight
-        self.fov_half_rad           = np.radians(135.0)
+        self.fov_half_rad           = np.radians(laser_fov / 2.0)   # Convert full FOV degrees into half FOV radians
 
         self.max_range = max_range
         self.min_range = min_range
@@ -125,7 +125,8 @@ class OccupancyGrid:
         # Grid initialised to zero log-odds (= 50% probability = unknown)
         self.grid = np.zeros((height, width), dtype=np.float32)
 
-    def world_to_grid(self, x: float, y: float) -> Tuple[int, int]:
+
+    def world_to_grid(self, x : float, y : float) -> Tuple[int, int]:
         """
         Convert world coordinates (metres) to grid coordinates (row, col).
 
@@ -145,7 +146,8 @@ class OccupancyGrid:
         row = int((y - self.origin_y) / self.resolution)
         return row, col
 
-    def grid_to_world(self, row: int, col: int) -> Tuple[float, float]:
+
+    def grid_to_world(self, row : int, col : int) -> Tuple[float, float]:
         """
         Convert grid coordinates to world coordinates (cell centre).
 
@@ -160,7 +162,8 @@ class OccupancyGrid:
         y = self.origin_y + (row + 0.5) * self.resolution
         return x, y
 
-    def is_valid_cell(self, row: int, col: int) -> bool:
+
+    def is_valid_cell(self, row : int, col : int) -> bool:
         """
         Check if grid cell is within bounds.
 
@@ -175,7 +178,7 @@ class OccupancyGrid:
     # ========================================================================
     # Bresenham's Line Algorithm
     # ========================================================================
-    def _ray_trace(self, start: Tuple[int, int], end: Tuple[int, int]) -> list:
+    def _ray_trace(self, start : Tuple[int, int], end : Tuple[int, int]) -> list:
         """
         Trace a line from start to end using Bresenham's algorithm.
         Returns all cells along the ray EXCEPT the endpoint.
@@ -239,8 +242,7 @@ class OccupancyGrid:
     # ========================================================================
     # Bayesian Occupancy Grid Update
     # ========================================================================
-    def update(self, pose: np.ndarray, ranges: np.ndarray,
-               angle_min: float, angle_increment: float):
+    def update(self, pose : np.ndarray, ranges : np.ndarray, angle_min : float, angle_increment : float):
         """
         Update the occupancy grid based on the robot's pose and laser scan data.
 
@@ -319,11 +321,22 @@ class OccupancyGrid:
             self.grid[er, ec] = min(self.grid[er, ec], self.log_odds_max)
 
     # ========================================================================
-    # Provided helper methods (do not modify)
+    # Helper methods
     # ========================================================================
+    def snapshot(self) -> 'OccupancyGrid':
+        """
+        Creates a fast, isolated copy of the grid without the extreme 
+        overhead of Python's recursive deepcopy.
+        """
+        import copy
+        snap = copy.copy(self)           # Fast shallow copy of parameters
+        snap.grid = self.grid.copy()     # Fast C-level deep copy of the NumPy array
+        return snap
+
     def get_probability_grid(self) -> np.ndarray | np.floating:
         """Convert log-odds grid to probability grid [0, 1]."""
         return log_odds_to_probability(self.grid)
+
 
     def get_ros_occupancy_grid(self) -> np.ndarray:
         """Convert to ROS format: -1 = unknown, 0 = free, 100 = occupied."""
@@ -335,7 +348,8 @@ class OccupancyGrid:
         occupancy[known_mask] = (prob * 100).astype(np.int8)
         return occupancy
 
-    def to_ros_message(self, frame_id: str = 'map', timestamp=None) -> OccupancyGridMsg:
+
+    def to_ros_message(self, frame_id : str = 'map', timestamp=None) -> OccupancyGridMsg:
         """Convert to nav_msgs/OccupancyGrid message for RViz."""
         msg = OccupancyGridMsg()
         msg.header = Header()
@@ -369,7 +383,6 @@ class OccupancyGridMapperNode(Node):
     Publishes:
       - /succulence/map/odom_only (OccupancyGrid)
     """
-
     def __init__(self):
         super().__init__('occupancy_grid_mapper')
 
@@ -392,6 +405,7 @@ class OccupancyGridMapperNode(Node):
             'occupancy_grid.log_odds_min': -100.0,
             'occupancy_grid.max_range': 3.5,
             'occupancy_grid.min_range': 0.1,
+            'occupancy_grid.laser_fov': 270.0,
             'occupancy_grid.edge_trim_degrees': 1.5,
             'occupancy_grid.edge_buffer_degrees': 3.0,
             'occupancy_grid.edge_min_weight': 0.1,
@@ -407,6 +421,15 @@ class OccupancyGridMapperNode(Node):
 
         # tiny helper to fetch values safely and silence 'pylance'
         def get_p(name: str):
+            """
+            Tiny helper to fetch values safely and silence 'pylance'.
+
+            Args:
+                name (str): _description_
+
+            Returns:
+                _type_: _description_
+            """
             val = self.get_parameter(name).value
             return val if val is not None else param_defaults[name]
 
@@ -417,7 +440,7 @@ class OccupancyGridMapperNode(Node):
         publish_rate : float    = float(get_p('map_publish_rate'))
 
         # --- Create occupancy grid ---
-        self.occupancy_grid = OccupancyGrid(
+        self.occupancy_grid : OccupancyGrid  = OccupancyGrid(
             resolution=float(get_p('occupancy_grid.resolution')),
             width=int(get_p('occupancy_grid.width')),
             height=int(get_p('occupancy_grid.height')),
@@ -432,6 +455,7 @@ class OccupancyGridMapperNode(Node):
             edge_min_weight=float(get_p('occupancy_grid.edge_min_weight')),
             max_range=float(get_p('occupancy_grid.max_range')),
             min_range=float(get_p('occupancy_grid.min_range')),
+            laser_fov=float(get_p('occupancy_grid.laser_fov')),
             lidar_x_offset=float(get_p('lidar.x_offset')),
             lidar_y_offset=float(get_p('lidar.y_offset')),
             lidar_yaw_offset=float(get_p('lidar.yaw_offset')),
@@ -446,10 +470,8 @@ class OccupancyGridMapperNode(Node):
         # --- Publishers / Subscribers ---
         self.map_pub = self.create_publisher(OccupancyGridMsg, map_topic, 10)
 
-        self.odom_sub = self.create_subscription(
-            Odometry, odom_topic, self.odom_callback, 10)
-        self.scan_sub = self.create_subscription(
-            LaserScan, scan_topic, self.scan_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, odom_topic, self.odom_callback, 10)
+        self.scan_sub = self.create_subscription(LaserScan, scan_topic, self.scan_callback, 10)
 
         # Publish map at fixed rate
         self.map_timer = self.create_timer(1.0 / publish_rate, self.publish_map)
@@ -462,6 +484,7 @@ class OccupancyGridMapperNode(Node):
             f'  Grid: {self.occupancy_grid.width}x{self.occupancy_grid.height} '
             f'@ {self.occupancy_grid.resolution}m/cell')
 
+
     def odom_callback(self, msg: Odometry):
         """Update current pose from dead-reckoning odometry."""
         x = msg.pose.pose.position.x
@@ -470,6 +493,7 @@ class OccupancyGridMapperNode(Node):
         rotation = Rotation.from_quat([quat.x, quat.y, quat.z, quat.w])
         theta = rotation.as_euler('xyz', degrees=False)[2]
         self.current_pose = np.array([x, y, theta])
+
 
     def scan_callback(self, msg: LaserScan):
         """Process laser scan: update occupancy grid."""
@@ -494,6 +518,7 @@ class OccupancyGridMapperNode(Node):
 
         if self.scan_count % 20 == 0:
             self.get_logger().info(f'Scans processed: {self.scan_count}')
+
 
     def publish_map(self):
         """Publish occupancy grid as ROS message."""

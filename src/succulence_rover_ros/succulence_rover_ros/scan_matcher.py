@@ -48,6 +48,7 @@ class ScanMatcher:
                  local_grid_size : int,
                  local_grid_resolution : float,
                  min_score : float,
+                 laser_fov: float,
                  edge_trim_degrees : float,
                  edge_buffer_degrees : float,
                  edge_min_weight : float,
@@ -68,7 +69,7 @@ class ScanMatcher:
         self.edge_buffer_rad            = np.radians(edge_buffer_degrees)
         self.edge_min_weight            = edge_min_weight
         self.lidar_yaw_offset           = lidar_yaw_offset
-        self.fov_half_rad               = np.radians(135.0)             # Assume 270 degree FOV
+        self.fov_half_rad               = np.radians(laser_fov / 2.0)   # Convert full FOV degrees into half FOV radians
 
 
     # ========================================================================
